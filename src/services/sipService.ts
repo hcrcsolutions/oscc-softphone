@@ -12,6 +12,7 @@ export interface SipConfig {
   username: string;
   password: string;
   domain?: string;
+  protocol: 'ws' | 'wss';
 }
 
 export interface CallState {
@@ -50,10 +51,13 @@ export class SipService {
     try {
       const domain = this.config.domain || this.config.server;
       
+      const port = this.config.protocol === 'wss' ? '7443' : '5066';
+      const serverUrl = `${this.config.protocol}://${this.config.server}:${port}`;
+      
       const userAgentOptions: UserAgentOptions = {
         uri: new URI('sip', this.config.username, domain),
         transportOptions: {
-          server: `ws://${this.config.server}:5066`
+          server: serverUrl
         },
         authorizationUsername: this.config.username,
         authorizationPassword: this.config.password,

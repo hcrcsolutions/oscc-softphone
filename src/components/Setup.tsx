@@ -8,7 +8,8 @@ export default function Setup() {
     server: '10.254.18.165',
     username: '1002',
     password: '1234',
-    domain: '10.254.18.165'
+    domain: '10.254.18.165',
+    protocol: 'ws'
   });
   const [audioSettings, setAudioSettings] = useState({
     microphoneDevice: 'default',
@@ -35,7 +36,8 @@ export default function Setup() {
         server: '10.254.18.165',
         username: '1002',
         password: '1234',
-        domain: '10.254.18.165'
+        domain: '10.254.18.165',
+        protocol: 'ws' as const
       };
       localStorage.setItem('sipConfig', JSON.stringify(defaultConfig));
     }
@@ -186,13 +188,47 @@ export default function Setup() {
               />
             </div>
             
+            <div className="form-control w-full">
+              <label className="label">
+                <span className="label-text">WebSocket Protocol</span>
+                <span className="label-text-alt text-xs">Choose transport protocol</span>
+              </label>
+              <div className="flex gap-4">
+                <label className="label cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="protocol" 
+                    className="radio radio-primary" 
+                    value="ws"
+                    checked={sipConfig.protocol === 'ws'}
+                    onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
+                  />
+                  <span className="label-text ml-2">WS (port 5066)</span>
+                </label>
+                <label className="label cursor-pointer">
+                  <input 
+                    type="radio" 
+                    name="protocol" 
+                    className="radio radio-primary" 
+                    value="wss"
+                    checked={sipConfig.protocol === 'wss'}
+                    onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
+                  />
+                  <span className="label-text ml-2">WSS (port 7443)</span>
+                </label>
+              </div>
+            </div>
+            
             <div className="alert alert-info mt-4">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
               </svg>
               <div>
                 <div className="font-bold">FreeSWITCH Configuration</div>
-                <div className="text-sm">Default settings are configured for FreeSWITCH on 10.254.18.165:5066. WebSocket connection uses port 5066. Your FreeSWITCH WebSocket is bound to ws://10.254.18.165:5066.</div>
+                <div className="text-sm">
+                  Default settings configured for FreeSWITCH on 10.254.18.165. 
+                  Select WS (port 5066) for unencrypted or WSS (port 7443) for encrypted WebSocket connections.
+                </div>
               </div>
             </div>
             
@@ -212,12 +248,12 @@ export default function Setup() {
           <div className="card-body">
             <h3 className="card-title mb-4">Audio Settings</h3>
             
-            <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Microphone Device</span>
+            <div className="form-control w-full h-15">
+              <label className="label h-9">
+                <span className="label-text w-48">Microphone Device</span>
               </label>
               <select 
-                className="select select-bordered w-full"
+                className="select select-bordered w-full h-9"
                 value={audioSettings.microphoneDevice}
                 onChange={(e) => handleAudioSettingChange('microphoneDevice', e.target.value)}
               >
@@ -227,12 +263,12 @@ export default function Setup() {
               </select>
             </div>
             
-            <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Speaker Device</span>
+            <div className="form-control w-full h-15">
+              <label className="label h-9">
+                <span className="label-text w-48">Speaker Device</span>
               </label>
               <select 
-                className="select select-bordered w-full"
+                className="select select-bordered w-full h-9"
                 value={audioSettings.speakerDevice}
                 onChange={(e) => handleAudioSettingChange('speakerDevice', e.target.value)}
               >
@@ -242,29 +278,29 @@ export default function Setup() {
               </select>
             </div>
             
-            <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Ring Volume: {audioSettings.ringVolume}%</span>
+            <div className="form-control w-full h-15">
+              <label className="label h-9">
+                <span className="label-text w-48">Ring Volume: {audioSettings.ringVolume}%</span>
               </label>
               <input 
                 type="range" 
                 min="0" 
                 max="100" 
-                className="range range-primary"
+                className="range range-primary h-9"
                 value={audioSettings.ringVolume}
                 onChange={(e) => handleAudioSettingChange('ringVolume', parseInt(e.target.value))}
               />
             </div>
             
-            <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Microphone Volume: {audioSettings.microphoneVolume}%</span>
+            <div className="form-control w-full h-15">
+              <label className="label h-9">
+                <span className="label-text w-48">Microphone Volume: {audioSettings.microphoneVolume}%</span>
               </label>
               <input 
                 type="range" 
                 min="0" 
                 max="100" 
-                className="range range-primary"
+                className="range range-primary h-9"
                 value={audioSettings.microphoneVolume}
                 onChange={(e) => handleAudioSettingChange('microphoneVolume', parseInt(e.target.value))}
               />
