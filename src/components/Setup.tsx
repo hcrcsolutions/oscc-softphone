@@ -7,7 +7,7 @@ export default function Setup() {
   const [sipConfig, setSipConfig] = useState<SipConfig>({
     server: '10.254.18.165',
     username: '1002',
-    password: '1234',
+    password: '',
     domain: '10.254.18.165',
     protocol: 'ws'
   });
@@ -35,7 +35,7 @@ export default function Setup() {
       const defaultConfig = {
         server: '10.254.18.165',
         username: '1002',
-        password: '1234',
+        password: '',
         domain: '10.254.18.165',
         protocol: 'ws' as const
       };
@@ -133,89 +133,89 @@ export default function Setup() {
             </div>
             
             <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">SIP Server (WebSocket)</span>
-                <span className="label-text-alt text-xs">FreeSWITCH IP address</span>
-              </label>
-              <input 
-                type="text" 
-                placeholder="sip.example.com" 
-                className="input input-bordered w-full"
-                value={sipConfig.server}
-                onChange={(e) => handleSipConfigChange('server', e.target.value)}
-              />
+              <div className="text-xs text-base-content/60 mb-1">FreeSWITCH IP address</div>
+              <div className="flex items-center gap-4">
+                <label className="label-text w-48">SIP Server (WebSocket)</label>
+                <input 
+                  type="text" 
+                  placeholder="sip.example.com" 
+                  className="input input-bordered flex-1"
+                  value={sipConfig.server}
+                  onChange={(e) => handleSipConfigChange('server', e.target.value)}
+                />
+              </div>
             </div>
             
             <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Username</span>
-                <span className="label-text-alt text-xs">Your SIP account username</span>
-              </label>
-              <input 
-                type="text" 
-                placeholder="1001" 
-                className="input input-bordered w-full"
-                value={sipConfig.username}
-                onChange={(e) => handleSipConfigChange('username', e.target.value)}
-              />
+              <div className="text-xs text-base-content/60 mb-1">Your SIP account username</div>
+              <div className="flex items-center gap-4">
+                <label className="label-text w-48">Username</label>
+                <input 
+                  type="text" 
+                  placeholder="1001" 
+                  className="input input-bordered flex-1"
+                  value={sipConfig.username}
+                  onChange={(e) => handleSipConfigChange('username', e.target.value)}
+                />
+              </div>
             </div>
             
             <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Password</span>
-                <span className="label-text-alt text-xs">Your SIP account password</span>
-              </label>
-              <input 
-                type="password" 
-                placeholder="Enter password" 
-                className="input input-bordered w-full"
-                value={sipConfig.password}
-                onChange={(e) => handleSipConfigChange('password', e.target.value)}
-              />
+              <div className="text-xs text-base-content/60 mb-1">Your SIP account password</div>
+              <div className="flex items-center gap-4">
+                <label className="label-text w-48">Password</label>
+                <input 
+                  type="password" 
+                  placeholder="Enter password" 
+                  className="input input-bordered flex-1"
+                  value={sipConfig.password}
+                  onChange={(e) => handleSipConfigChange('password', e.target.value)}
+                />
+              </div>
             </div>
             
             <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">Domain (Optional)</span>
-                <span className="label-text-alt text-xs">SIP domain if different from server</span>
-              </label>
-              <input 
-                type="text" 
-                placeholder="example.com" 
-                className="input input-bordered w-full"
-                value={sipConfig.domain}
-                onChange={(e) => handleSipConfigChange('domain', e.target.value)}
-              />
+              <div className="text-xs text-base-content/60 mb-1">SIP domain if different from server</div>
+              <div className="flex items-center gap-4">
+                <label className="label-text w-48">Domain (Optional)</label>
+                <input 
+                  type="text" 
+                  placeholder="example.com" 
+                  className="input input-bordered flex-1"
+                  value={sipConfig.domain}
+                  onChange={(e) => handleSipConfigChange('domain', e.target.value)}
+                />
+              </div>
             </div>
             
             <div className="form-control w-full">
-              <label className="label">
-                <span className="label-text">WebSocket Protocol</span>
-                <span className="label-text-alt text-xs">Choose transport protocol</span>
-              </label>
-              <div className="flex gap-4">
-                <label className="label cursor-pointer">
-                  <input 
-                    type="radio" 
-                    name="protocol" 
-                    className="radio radio-primary" 
-                    value="ws"
-                    checked={sipConfig.protocol === 'ws'}
-                    onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
-                  />
-                  <span className="label-text ml-2">WS (port 5066)</span>
-                </label>
-                <label className="label cursor-pointer">
-                  <input 
-                    type="radio" 
-                    name="protocol" 
-                    className="radio radio-primary" 
-                    value="wss"
-                    checked={sipConfig.protocol === 'wss'}
-                    onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
-                  />
-                  <span className="label-text ml-2">WSS (port 7443)</span>
-                </label>
+              <div className="text-xs text-base-content/60 mb-1">Choose transport protocol</div>
+              <div className="flex items-center gap-4">
+                <label className="label-text w-48">WebSocket Protocol</label>
+                  <div className="flex gap-4">
+                    <label className="label cursor-pointer">
+                      <input 
+                        type="radio" 
+                        name="protocol" 
+                        className="radio radio-primary" 
+                        value="ws"
+                        checked={sipConfig.protocol === 'ws'}
+                        onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
+                      />
+                      <span className="label-text ml-2">WS (port 5066)</span>
+                    </label>
+                    <label className="label cursor-pointer">
+                      <input 
+                        type="radio" 
+                        name="protocol" 
+                        className="radio radio-primary" 
+                        value="wss"
+                        checked={sipConfig.protocol === 'wss'}
+                        onChange={(e) => handleSipConfigChange('protocol', e.target.value)}
+                      />
+                      <span className="label-text ml-2">WSS (port 7443)</span>
+                    </label>
+                  </div>
               </div>
             </div>
             
