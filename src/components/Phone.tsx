@@ -13,6 +13,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
   const [isRegistered, setIsRegistered] = useState(false);
   const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming'}>>([]);
+  const [audioEnabled, setAudioEnabled] = useState(false);
   const sipService = useRef<SipService>(new SipService());
 
   useEffect(() => {
@@ -84,6 +85,22 @@ export default function Phone({ theme }: PhoneProps) {
     }
   };
 
+  const enableAudio = () => {
+    // This function helps with browser autoplay policies
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    audioContext.resume().then(() => {
+      console.log('Audio context resumed');
+      setAudioEnabled(true);
+    });
+    
+    // Also try to play silence to enable audio
+    const audio = new Audio();
+    audio.src = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWT' +
+               'AkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOU' +
+               'qzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHwU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RkFAU8k9f0wHgiBCh+zPLTgzUIHWq+8+OWT';
+    audio.play().catch(() => {});
+  };
+
   const getStatusColor = () => {
     switch (callState.status) {
       case 'connected': return 'badge-success';
@@ -117,6 +134,11 @@ export default function Phone({ theme }: PhoneProps) {
           <div className="badge badge-outline">
             Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
           </div>
+          {!audioEnabled && (
+            <button onClick={enableAudio} className="btn btn-xs btn-warning">
+              Enable Audio
+            </button>
+          )}
         </div>
       </div>
       
