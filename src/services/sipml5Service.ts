@@ -10,6 +10,7 @@ export interface CallState {
   status: 'idle' | 'connecting' | 'connected' | 'ringing' | 'disconnected' | 'failed';
   remoteNumber?: string;
   duration?: number;
+  direction?: 'incoming' | 'outgoing';
 }
 
 // Declare global SIPml for TypeScript
@@ -29,6 +30,7 @@ export class SipML5Service {
   private isInitialized = false;
   private isStackStarted = false;
   private currentRemoteNumber?: string;
+  private currentCallDirection?: 'incoming' | 'outgoing';
   private remoteAudio?: HTMLAudioElement;
   private loadPromise?: Promise<void>;
 
@@ -264,8 +266,9 @@ export class SipML5Service {
     this.callSession = session;
     const remoteUser = session.getRemoteFriendlyName() || 'Unknown';
     this.currentRemoteNumber = remoteUser;
+    this.currentCallDirection = 'incoming';
     
-    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser });
+    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
     
     // Set up call event handlers
     session.setConfiguration({
@@ -281,24 +284,26 @@ export class SipML5Service {
     
     switch (event.type) {
       case 'connecting':
-        this.onCallStateChanged?.({ status: 'connecting', remoteNumber: this.currentRemoteNumber });
+        this.onCallStateChanged?.({ status: 'connecting', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
         break;
         
       case 'connected':
-        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber });
+        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
         break;
         
       case 'terminating':
       case 'terminated':
-        this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
+        this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
         this.currentRemoteNumber = undefined;
+        this.currentCallDirection = undefined;
         this.callSession = null;
         this.cleanupAudio();
         break;
         
       case 'failed':
-        this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber });
+        this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
         this.currentRemoteNumber = undefined;
+        this.currentCallDirection = undefined;
         this.callSession = null;
         this.cleanupAudio();
         break;
@@ -316,6 +321,7 @@ export class SipML5Service {
 
     try {
       this.currentRemoteNumber = number;
+      this.currentCallDirection = 'outgoing';
       const domain = this.config.domain || this.config.server;
       const target = `sip:${number}@${domain}`;
       
@@ -336,7 +342,7 @@ export class SipML5Service {
         }
       });
 
-      this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
+      this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
       
       const result = this.callSession.call(target);
       if (result !== 0) {

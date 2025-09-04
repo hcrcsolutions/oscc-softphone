@@ -19,6 +19,7 @@ export interface CallState {
   status: 'idle' | 'connecting' | 'connected' | 'ringing' | 'disconnected' | 'failed';
   remoteNumber?: string;
   duration?: number;
+  direction?: 'incoming' | 'outgoing';
 }
 
 export class SipService {
@@ -30,6 +31,7 @@ export class SipService {
   private onRegistrationStateChanged?: (registered: boolean) => void;
   private remoteAudio?: HTMLAudioElement;
   private currentRemoteNumber?: string;
+  private currentCallDirection?: 'incoming' | 'outgoing';
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -234,20 +236,23 @@ export class SipService {
   private handleIncomingCall(invitation: any) {
     this.currentSession = invitation;
     const remoteUser = invitation.remoteIdentity?.uri?.user || 'Unknown';
-    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser });
+    this.currentCallDirection = 'incoming';
+    this.currentRemoteNumber = remoteUser;
+    
+    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
 
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
         case SessionState.Established:
-          this.currentRemoteNumber = remoteUser;
           this.setupAudioStreams(invitation);
-          this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser });
+          this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming' });
           break;
         case SessionState.Terminated:
           this.cleanupAudioStreams();
-          this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
+          this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
           this.currentSession = undefined;
           this.currentRemoteNumber = undefined;
+          this.currentCallDirection = undefined;
           break;
       }
     });
@@ -266,21 +271,24 @@ export class SipService {
 
       this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
 
+      this.currentCallDirection = 'outgoing';
+      this.currentRemoteNumber = number;
+      
       this.currentSession.stateChange.addListener((state: SessionState) => {
         switch (state) {
           case SessionState.Establishing:
-            this.currentRemoteNumber = number;
-            this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
+            this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
             break;
           case SessionState.Established:
             this.setupAudioStreams(this.currentSession);
-            this.onCallStateChanged?.({ status: 'connected', remoteNumber: number });
+            this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing' });
             break;
           case SessionState.Terminated:
             this.cleanupAudioStreams();
-            this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
+            this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
             this.currentSession = undefined;
             this.currentRemoteNumber = undefined;
+            this.currentCallDirection = undefined;
             break;
         }
       });

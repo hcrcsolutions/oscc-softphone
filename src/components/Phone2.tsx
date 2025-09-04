@@ -60,7 +60,7 @@ export default function Phone2({ theme }: Phone2Props) {
         const historyEntry = {
           number: state.remoteNumber,
           time: new Date().toLocaleTimeString(),
-          type: 'outgoing' as const,
+          type: (state.direction || 'outgoing') as 'outgoing' | 'incoming',
           duration
         };
         setCallHistory(prev => [historyEntry, ...prev.slice(0, 9)]); // Keep last 10 calls
@@ -294,7 +294,7 @@ export default function Phone2({ theme }: Phone2Props) {
                 ) : (
                   <button 
                     onClick={handleCall}
-                    className={`btn flex-1 w-full ${!isRegistered || !phoneNumber.trim() ? 'btn-disabled' : 'btn-success'}`}
+                    className={`btn w-full ${!isRegistered || !phoneNumber.trim() ? 'btn-disabled' : 'btn-success'}`}
                     disabled={!isRegistered || !phoneNumber.trim()}
                   >
                     <TbPhone className="w-5 h-5" />
