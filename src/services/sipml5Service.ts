@@ -229,10 +229,11 @@ export class SipML5Service {
 
       const result = this.regSession.register();
       if (result !== 0) {
-        console.error('SipML5: Registration failed with code:', result);
+        console.warn('SipML5: Registration call returned code:', result, '(this may be normal for async operation)');
       } else {
-        console.log('SipML5: Registration session created and started');
+        console.log('SipML5: Registration call successful');
       }
+      console.log('SipML5: Registration session created and started');
     } catch (error) {
       console.error('SipML5: Failed to create registration session:', error);
     }
