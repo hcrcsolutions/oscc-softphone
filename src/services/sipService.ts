@@ -162,10 +162,12 @@ export class SipService {
       const userAgentOptions: UserAgentOptions = {
         uri: new URI('sip', this.config.username, domain),
         transportOptions: {
-          server: serverUrl
+          server: serverUrl,
+          traceSip: true
         },
         authorizationUsername: this.config.username,
         authorizationPassword: this.config.password,
+        logLevel: 'debug' as any,
         sessionDescriptionHandlerFactoryOptions: {
           constraints: {
             audio: true,
@@ -176,8 +178,7 @@ export class SipService {
               iceServers: []
             }
           }
-        },
-        logLevel: 'warn'
+        }
       };
 
       this.userAgent = new UserAgent(userAgentOptions);
@@ -188,7 +189,29 @@ export class SipService {
         }
       };
 
+      // Enable SIP message tracing after UserAgent is started
       await this.userAgent.start();
+      
+      // Add SIP message tracing
+      if (this.userAgent.transport) {
+        const transport = this.userAgent.transport;
+        const originalSend = transport.send;
+        const originalOnMessage = transport.onMessage;
+        
+        // Trace outgoing messages
+        transport.send = function(message) {
+          console.log('🔴 SIP.js SENT:', message);
+          return originalSend.call(this, message);
+        };
+        
+        // Trace incoming messages  
+        transport.onMessage = function(message) {
+          console.log('🔵 SIP.js RECEIVED:', message);
+          if (originalOnMessage) {
+            return originalOnMessage.call(this, message);
+          }
+        };
+      }
 
       this.registerer = new Registerer(this.userAgent);
       
