@@ -29,6 +29,7 @@ export class SipService {
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
   private remoteAudio?: HTMLAudioElement;
+  private currentRemoteNumber?: string;
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -213,13 +214,15 @@ export class SipService {
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
         case SessionState.Established:
+          this.currentRemoteNumber = remoteUser;
           this.setupAudioStreams(invitation);
           this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser });
           break;
         case SessionState.Terminated:
           this.cleanupAudioStreams();
-          this.onCallStateChanged?.({ status: 'idle' });
+          this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
           this.currentSession = undefined;
+          this.currentRemoteNumber = undefined;
           break;
       }
     });
@@ -241,6 +244,7 @@ export class SipService {
       this.currentSession.stateChange.addListener((state: SessionState) => {
         switch (state) {
           case SessionState.Establishing:
+            this.currentRemoteNumber = number;
             this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
             break;
           case SessionState.Established:
@@ -249,15 +253,17 @@ export class SipService {
             break;
           case SessionState.Terminated:
             this.cleanupAudioStreams();
-            this.onCallStateChanged?.({ status: 'idle' });
+            this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
             this.currentSession = undefined;
+            this.currentRemoteNumber = undefined;
             break;
         }
       });
 
       await this.currentSession.invite();
     } catch (error) {
-      this.onCallStateChanged?.({ status: 'failed' });
+      this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber });
+      this.currentRemoteNumber = undefined;
       console.error('Failed to make call:', error);
       throw error;
     }

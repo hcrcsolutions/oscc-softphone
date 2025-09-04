@@ -12,9 +12,12 @@ export default function Phone2({ theme }: Phone2Props) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
   const [isRegistered, setIsRegistered] = useState(false);
-  const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming'}>>([]);
+  const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming', duration?: string}>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [callDuration, setCallDuration] = useState(0);
+  const callStartTime = useRef<Date | null>(null);
+  const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const sipService = useRef<SipML5Service>(new SipML5Service());
 
   useEffect(() => {
@@ -23,14 +26,63 @@ export default function Phone2({ theme }: Phone2Props) {
     service.setCallStateCallback((state: CallState) => {
       setCallState(state);
       
+      // Track call start time when connected
+      if (state.status === 'connected' && !callStartTime.current) {
+        callStartTime.current = new Date();
+        console.log('Call started at:', callStartTime.current);
+        
+        // Start the timer
+        timerInterval.current = setInterval(() => {
+          if (callStartTime.current) {
+            const now = new Date();
+            const elapsed = Math.floor((now.getTime() - callStartTime.current.getTime()) / 1000);
+            setCallDuration(elapsed);
+          }
+        }, 1000);
+      }
+      
       // Add to call history when call ends
       if (state.status === 'idle' && state.remoteNumber) {
+        let duration: string | undefined;
+        if (callStartTime.current) {
+          const endTime = new Date();
+          const durationMs = endTime.getTime() - callStartTime.current.getTime();
+          const seconds = Math.floor(durationMs / 1000);
+          const minutes = Math.floor(seconds / 60);
+          const remainingSeconds = seconds % 60;
+          duration = minutes > 0 ? `${minutes}:${remainingSeconds.toString().padStart(2, '0')}` : `${seconds}s`;
+          console.log('Call ended, duration:', duration);
+          callStartTime.current = null;
+        } else {
+          console.log('No call start time recorded');
+        }
+        
         const historyEntry = {
           number: state.remoteNumber,
           time: new Date().toLocaleTimeString(),
-          type: 'outgoing' as const
+          type: 'outgoing' as const,
+          duration
         };
         setCallHistory(prev => [historyEntry, ...prev.slice(0, 9)]); // Keep last 10 calls
+      }
+      
+      // Reset call start time on failed calls
+      if (state.status === 'failed') {
+        callStartTime.current = null;
+        if (timerInterval.current) {
+          clearInterval(timerInterval.current);
+          timerInterval.current = null;
+        }
+        setCallDuration(0);
+      }
+      
+      // Clear timer when call ends normally
+      if (state.status === 'idle') {
+        if (timerInterval.current) {
+          clearInterval(timerInterval.current);
+          timerInterval.current = null;
+        }
+        setCallDuration(0);
       }
     });
 
@@ -66,6 +118,10 @@ export default function Phone2({ theme }: Phone2Props) {
 
     return () => {
       service.disconnect();
+      // Clear timer on unmount
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+      }
     };
   }, []);
 
@@ -129,13 +185,22 @@ export default function Phone2({ theme }: Phone2Props) {
     }
   };
 
+  const formatDuration = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
   const getStatusText = () => {
     if (isLoading) return 'Loading SipML5...';
     
     switch (callState.status) {
       case 'idle': return isRegistered ? 'Ready (SipML5)' : 'Not Registered (SipML5)';
       case 'connecting': return 'Connecting...';
-      case 'connected': return `Connected to ${callState.remoteNumber}`;
+      case 'connected': {
+        const timer = callDuration > 0 ? ` (${formatDuration(callDuration)})` : '';
+        return `Connected to ${callState.remoteNumber}${timer}`;
+      }
       case 'ringing': return `Incoming call from ${callState.remoteNumber}`;
       case 'failed': return 'Call Failed';
       default: return 'Unknown';
@@ -256,6 +321,7 @@ export default function Phone2({ theme }: Phone2Props) {
                       {call.type}
                     </span>
                     {call.time}
+                    {call.duration && <span className="ml-2 text-xs">({call.duration})</span>}
                   </div>
                 </div>
               ))}
