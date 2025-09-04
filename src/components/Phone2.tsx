@@ -2,19 +2,20 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { TbPhone, TbPhoneOff, TbPhoneIncoming } from 'react-icons/tb';
-import { SipService, CallState, SipConfig } from '@/services/sipService';
+import { SipML5Service, CallState, SipML5Config } from '@/services/sipml5Service';
 
-interface PhoneProps {
+interface Phone2Props {
   theme: string;
 }
 
-export default function Phone({ theme }: PhoneProps) {
+export default function Phone2({ theme }: Phone2Props) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
   const [isRegistered, setIsRegistered] = useState(false);
   const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming'}>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const sipService = useRef<SipService>(new SipService());
+  const [isLoading, setIsLoading] = useState(true);
+  const sipService = useRef<SipML5Service>(new SipML5Service());
 
   useEffect(() => {
     const service = sipService.current;
@@ -36,15 +37,32 @@ export default function Phone({ theme }: PhoneProps) {
     service.setRegistrationStateCallback(setIsRegistered);
 
     // Load SIP configuration from localStorage
-    const savedConfig = localStorage.getItem('sipConfig');
-    if (savedConfig) {
+    const initializeSipML5 = async () => {
       try {
-        const config: SipConfig = JSON.parse(savedConfig);
-        service.configure(config).catch(console.error);
+        setIsLoading(true);
+        
+        const savedConfig = localStorage.getItem('sipConfig');
+        if (savedConfig) {
+          const config: SipML5Config = JSON.parse(savedConfig);
+          console.log('Phone2: Loading saved config for SipML5:', { ...config, password: config.password ? '***' : 'EMPTY' });
+          
+          // Only configure if we have a password
+          if (config.password && config.password.trim() !== '') {
+            await service.configure(config);
+          } else {
+            console.warn('Phone2: No password configured for SipML5, skipping connection');
+          }
+        } else {
+          console.log('Phone2: No saved SIP configuration found for SipML5');
+        }
       } catch (error) {
-        console.error('Failed to load SIP configuration:', error);
+        console.error('Failed to load SipML5 configuration:', error);
+      } finally {
+        setIsLoading(false);
       }
-    }
+    };
+
+    initializeSipML5();
 
     return () => {
       service.disconnect();
@@ -112,8 +130,10 @@ export default function Phone({ theme }: PhoneProps) {
   };
 
   const getStatusText = () => {
+    if (isLoading) return 'Loading SipML5...';
+    
     switch (callState.status) {
-      case 'idle': return isRegistered ? 'Ready (SIP.js)' : 'Not Registered (SIP.js)';
+      case 'idle': return isRegistered ? 'Ready (SipML5)' : 'Not Registered (SipML5)';
       case 'connecting': return 'Connecting...';
       case 'connected': return `Connected to ${callState.remoteNumber}`;
       case 'ringing': return `Incoming call from ${callState.remoteNumber}`;
@@ -126,7 +146,7 @@ export default function Phone({ theme }: PhoneProps) {
     <div className="p-8">
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-        <h2 className="text-3xl font-bold">Phone</h2>
+        <h2 className="text-3xl font-bold">Phone (SipML5)</h2>
         <div className="flex gap-2">
           <div className={`badge ${getStatusColor()}`}>
             {getStatusText()}
@@ -134,7 +154,7 @@ export default function Phone({ theme }: PhoneProps) {
           <div className="badge badge-outline">
             Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
           </div>
-          {!audioEnabled && (
+          {!audioEnabled && !isLoading && (
             <button onClick={enableAudio} className="btn btn-xs btn-warning">
               Enable Audio
             </button>
@@ -145,76 +165,86 @@ export default function Phone({ theme }: PhoneProps) {
         <div className="card bg-base-100 shadow-xl max-w-md mx-auto">
           <div className="card-body">
             <h3 className="card-title mb-4 text-center">Dialer</h3>
-          
-          <div className="flex gap-2 mb-4">
-            <input 
-              type="text" 
-              placeholder="Enter phone number" 
-              className="input input-bordered flex-1"
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-            />
-            <button 
-              onClick={handleClearNumber}
-              className="btn btn-outline"
-            >
-              Clear
-            </button>
-          </div>
-          
-            <div className="grid grid-cols-3 gap-3 mb-4 justify-items-center">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
-                <button 
-                  key={digit} 
-                  className="btn btn-circle btn-outline w-20 h-20 text-2xl font-bold"
-                  onClick={() => handleDigitClick(digit)}
-                >
-                  {digit}
-                </button>
-              ))}
-          </div>
-          
-          {callState.status === 'ringing' ? (
-            <div className="flex gap-2">
-              <button 
-                onClick={handleAnswer}
-                className="btn btn-success flex-1"
-              >
-                <TbPhoneIncoming className="w-5 h-5" />
-                Answer
-              </button>
-              <button 
-                onClick={handleHangup}
-                className="btn btn-error flex-1"
-              >
-                <TbPhoneOff className="w-5 h-5" />
-                Decline
-              </button>
-            </div>
-          ) : callState.status === 'connected' || callState.status === 'connecting' ? (
-            <button 
-              onClick={handleHangup}
-              className="btn btn-error w-full"
-            >
-              <TbPhoneOff className="w-5 h-5" />
-              Hang Up
-            </button>
-          ) : (
-            <button 
-              onClick={handleCall}
-              className={`btn flex-1 w-full ${!isRegistered || !phoneNumber.trim() ? 'btn-disabled' : 'btn-success'}`}
-              disabled={!isRegistered || !phoneNumber.trim()}
-            >
-              <TbPhone className="w-5 h-5" />
-              Call
-            </button>
-          )}
+            
+            {isLoading ? (
+              <div className="flex justify-center items-center py-8">
+                <div className="loading loading-spinner loading-md"></div>
+                <span className="ml-2">Loading SipML5...</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-2 mb-4">
+                  <input 
+                    type="text" 
+                    placeholder="Enter phone number" 
+                    className="input input-bordered flex-1"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                  />
+                  <button 
+                    onClick={handleClearNumber}
+                    className="btn btn-outline"
+                  >
+                    Clear
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-3 gap-3 mb-4 justify-items-center">
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
+                    <button 
+                      key={digit} 
+                      className="btn btn-circle btn-outline w-20 h-20 text-2xl font-bold"
+                      onClick={() => handleDigitClick(digit)}
+                    >
+                      {digit}
+                    </button>
+                  ))}
+                </div>
+                
+                {callState.status === 'ringing' ? (
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={handleAnswer}
+                      className="btn btn-success flex-1"
+                    >
+                      <TbPhoneIncoming className="w-5 h-5" />
+                      Answer
+                    </button>
+                    <button 
+                      onClick={handleHangup}
+                      className="btn btn-error flex-1"
+                    >
+                      <TbPhoneOff className="w-5 h-5" />
+                      Decline
+                    </button>
+                  </div>
+                ) : callState.status === 'connected' || callState.status === 'connecting' ? (
+                  <button 
+                    onClick={handleHangup}
+                    className="btn btn-error w-full"
+                  >
+                    <TbPhoneOff className="w-5 h-5" />
+                    Hang Up
+                  </button>
+                ) : (
+                  <button 
+                    onClick={handleCall}
+                    className={`btn flex-1 w-full ${!isRegistered || !phoneNumber.trim() ? 'btn-disabled' : 'btn-success'}`}
+                    disabled={!isRegistered || !phoneNumber.trim()}
+                  >
+                    <TbPhone className="w-5 h-5" />
+                    Call
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
         
         <div className="card bg-base-100 shadow-xl mt-6">
           <div className="card-body">
             <h3 className="card-title">Call History</h3>
+            <div className="badge badge-secondary badge-sm mb-2">Using SipML5 Library</div>
           <div className="divider"></div>
           {callHistory.length > 0 ? (
             <div className="space-y-2">

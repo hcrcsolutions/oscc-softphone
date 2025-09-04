@@ -133,65 +133,84 @@ export default function Setup() {
             </div>
             
             <div className="form-control w-full">
-              <div className="text-xs text-base-content/60 mb-1">FreeSWITCH IP address</div>
               <div className="flex items-center gap-4">
-                <label className="label-text w-48">SIP Server (WebSocket)</label>
-                <input 
-                  type="text" 
-                  placeholder="sip.example.com" 
-                  className="input input-bordered flex-1"
-                  value={sipConfig.server}
-                  onChange={(e) => handleSipConfigChange('server', e.target.value)}
-                />
+                <div className="w-48">
+                  <label className="label-text">SIP Server (WebSocket)</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">FreeSWITCH IP address</div>
+                  <input 
+                    type="text" 
+                    placeholder="sip.example.com" 
+                    className="input input-bordered w-full"
+                    value={sipConfig.server}
+                    onChange={(e) => handleSipConfigChange('server', e.target.value)}
+                  />
+                </div>
               </div>
             </div>
             
             <div className="form-control w-full">
-              <div className="text-xs text-base-content/60 mb-1">Your SIP account username</div>
               <div className="flex items-center gap-4">
-                <label className="label-text w-48">Username</label>
-                <input 
-                  type="text" 
-                  placeholder="1001" 
-                  className="input input-bordered flex-1"
-                  value={sipConfig.username}
-                  onChange={(e) => handleSipConfigChange('username', e.target.value)}
-                />
+                <div className="w-48">
+                  <label className="label-text">Username</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">Your SIP account username</div>
+                  <input 
+                    type="text" 
+                    placeholder="1001" 
+                    className="input input-bordered w-full"
+                    value={sipConfig.username}
+                    onChange={(e) => handleSipConfigChange('username', e.target.value)}
+                  />
+                </div>
               </div>
             </div>
             
             <div className="form-control w-full">
-              <div className="text-xs text-base-content/60 mb-1">Your SIP account password</div>
               <div className="flex items-center gap-4">
-                <label className="label-text w-48">Password</label>
-                <input 
-                  type="password" 
-                  placeholder="Enter password" 
-                  className="input input-bordered flex-1"
-                  value={sipConfig.password}
-                  onChange={(e) => handleSipConfigChange('password', e.target.value)}
-                />
+                <div className="w-48">
+                  <label className="label-text">Password</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">Your SIP account password</div>
+                  <input 
+                    type="password" 
+                    placeholder="Enter password" 
+                    className="input input-bordered w-full"
+                    value={sipConfig.password}
+                    onChange={(e) => handleSipConfigChange('password', e.target.value)}
+                  />
+                </div>
               </div>
             </div>
             
             <div className="form-control w-full">
-              <div className="text-xs text-base-content/60 mb-1">SIP domain if different from server</div>
               <div className="flex items-center gap-4">
-                <label className="label-text w-48">Domain (Optional)</label>
-                <input 
-                  type="text" 
-                  placeholder="example.com" 
-                  className="input input-bordered flex-1"
-                  value={sipConfig.domain}
-                  onChange={(e) => handleSipConfigChange('domain', e.target.value)}
-                />
+                <div className="w-48">
+                  <label className="label-text">Domain (Optional)</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">SIP domain if different from server</div>
+                  <input 
+                    type="text" 
+                    placeholder="example.com" 
+                    className="input input-bordered w-full"
+                    value={sipConfig.domain}
+                    onChange={(e) => handleSipConfigChange('domain', e.target.value)}
+                  />
+                </div>
               </div>
             </div>
             
             <div className="form-control w-full">
-              <div className="text-xs text-base-content/60 mb-1">Choose transport protocol</div>
               <div className="flex items-center gap-4">
-                <label className="label-text w-48">WebSocket Protocol</label>
+                <div className="w-48">
+                  <label className="label-text">WebSocket Protocol</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">Choose transport protocol</div>
                   <div className="flex gap-4">
                     <label className="label cursor-pointer">
                       <input 
@@ -216,6 +235,7 @@ export default function Setup() {
                       <span className="label-text ml-2">WSS (port 7443)</span>
                     </label>
                   </div>
+                </div>
               </div>
             </div>
             
@@ -227,6 +247,7 @@ export default function Setup() {
                 <div className="font-bold">FreeSWITCH Configuration</div>
                 <div className="text-sm">
                   Default settings configured for FreeSWITCH on 10.254.18.165. 
+                  This configuration works with both SIP.js and SipML5 phone implementations.
                   Select WS (port 5066) for unencrypted or WSS (port 7443) for encrypted WebSocket connections.
                 </div>
               </div>

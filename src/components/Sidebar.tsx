@@ -20,7 +20,16 @@ export default function Sidebar({ activeComponent, setActiveComponent, isCollaps
               className={`${activeComponent === 'phone' ? 'active' : ''}`}
             >
               <TbPhone className="w-6 h-6" />
-              {!isCollapsed && <span>Phone</span>}
+              {!isCollapsed && <span>Phone (SIP.js)</span>}
+            </button>
+          </li>
+          <li>
+            <button
+              onClick={() => setActiveComponent('phone2')}
+              className={`${activeComponent === 'phone2' ? 'active' : ''}`}
+            >
+              <TbPhone className="w-6 h-6" />
+              {!isCollapsed && <span>Phone (SipML5)</span>}
             </button>
           </li>
           <li>

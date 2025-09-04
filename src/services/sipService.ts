@@ -176,11 +176,6 @@ export class SipService {
             }
           }
         },
-        media: {
-          remote: {
-            audio: this.remoteAudio as any
-          }
-        },
         logLevel: 'warn'
       };
 

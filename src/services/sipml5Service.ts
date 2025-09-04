@@ -1,0 +1,439 @@
+export interface SipML5Config {
+  server: string;
+  username: string;
+  password: string;
+  domain?: string;
+  protocol: 'ws' | 'wss';
+}
+
+export interface CallState {
+  status: 'idle' | 'connecting' | 'connected' | 'ringing' | 'disconnected' | 'failed';
+  remoteNumber?: string;
+  duration?: number;
+}
+
+// Declare global SIPml for TypeScript
+declare global {
+  interface Window {
+    SIPml: any;
+  }
+}
+
+export class SipML5Service {
+  private sipStack?: any;
+  private regSession?: any;
+  private callSession?: any;
+  private config?: SipML5Config;
+  private onCallStateChanged?: (state: CallState) => void;
+  private onRegistrationStateChanged?: (registered: boolean) => void;
+  private isInitialized = false;
+  private isStackStarted = false;
+  private currentRemoteNumber?: string;
+  private remoteAudio?: HTMLAudioElement;
+  private loadPromise?: Promise<void>;
+
+  constructor() {
+    this.loadSipML5();
+  }
+
+  private async loadSipML5(): Promise<void> {
+    // Return existing promise if already loading
+    if (this.loadPromise) {
+      return this.loadPromise;
+    }
+    
+    // Return immediately if already loaded
+    if (this.isInitialized) {
+      return Promise.resolve();
+    }
+
+    this.loadPromise = new Promise((resolve, reject) => {
+      if (window.SIPml) {
+        console.log('SipML5: Already loaded');
+        // Still need to initialize if not done
+        if (!this.isInitialized) {
+          window.SIPml.init(() => {
+            console.log('SipML5: Initialized successfully');
+            this.isInitialized = true;
+            resolve();
+          }, (error: any) => {
+            console.error('SipML5: Initialization failed:', error);
+            reject(error);
+          });
+        } else {
+          resolve();
+        }
+        return;
+      }
+
+      console.log('SipML5: Loading library...');
+      
+      const script = document.createElement('script');
+      script.src = '/libs/SIPml-api.js';
+      script.onload = () => {
+        console.log('SipML5: Library loaded successfully');
+        
+        // Initialize SIPml
+        if (window.SIPml) {
+          window.SIPml.init(() => {
+            console.log('SipML5: Initialized successfully');
+            this.isInitialized = true;
+            resolve();
+          }, (error: any) => {
+            console.error('SipML5: Initialization failed:', error);
+            this.loadPromise = undefined; // Reset on error
+            reject(error);
+          });
+        } else {
+          this.loadPromise = undefined; // Reset on error
+          reject(new Error('SIPml not found after loading'));
+        }
+      };
+      script.onerror = () => {
+        console.error('SipML5: Failed to load library');
+        this.loadPromise = undefined; // Reset on error
+        reject(new Error('Failed to load SipML5'));
+      };
+      
+      document.head.appendChild(script);
+    });
+    
+    return this.loadPromise;
+  }
+
+  setCallStateCallback(callback: (state: CallState) => void) {
+    this.onCallStateChanged = callback;
+  }
+
+  setRegistrationStateCallback(callback: (registered: boolean) => void) {
+    this.onRegistrationStateChanged = callback;
+  }
+
+  async configure(config: SipML5Config): Promise<void> {
+    this.config = config;
+    
+    try {
+      // Wait for SipML5 to be loaded if not already
+      if (!this.isInitialized) {
+        console.log('SipML5: Waiting for library to load...');
+        await this.loadSipML5();
+      }
+      
+      await this.disconnect();
+      await this.connect();
+    } catch (error) {
+      console.error('SipML5: Configuration failed:', error);
+      throw new Error(`SipML5 configuration failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private async connect(): Promise<void> {
+    if (!this.config || !this.isInitialized) {
+      throw new Error('SipML5 not initialized or configured');
+    }
+
+    try {
+      const domain = this.config.domain || this.config.server;
+      const port = this.config.protocol === 'wss' ? '7443' : '5066';
+      const wsUri = `${this.config.protocol}://${this.config.server}:${port}`;
+      
+      console.log('SipML5: Creating SIP stack with WebSocket:', wsUri);
+      console.log('SipML5: Configuration - realm:', domain, 'impi:', this.config.username, 'impu:', `sip:${this.config.username}@${domain}`);
+
+      // Create SIP stack
+      this.sipStack = new window.SIPml.Stack({
+        realm: domain,
+        impi: this.config.username,
+        impu: `sip:${this.config.username}@${domain}`,
+        password: this.config.password,
+        display_name: this.config.username,
+        websocket_proxy_url: wsUri,
+        outbound_proxy_url: null,
+        ice_servers: [],
+        enable_rtcweb_breaker: true,
+        events_listener: {
+          events: '*',
+          listener: this.handleStackEvent.bind(this)
+        }
+      });
+
+      // Start the SIP stack
+      const result = this.sipStack.start();
+      if (result !== 0) {
+        throw new Error(`Failed to start SIP stack: ${result}`);
+      }
+      
+      console.log('SipML5: SIP stack started');
+
+    } catch (error) {
+      console.error('SipML5: Failed to connect:', error);
+      this.onRegistrationStateChanged?.(false);
+      throw error;
+    }
+  }
+
+  private handleStackEvent(event: any) {
+    console.log('SipML5: Stack event:', event.type, event);
+    
+    switch (event.type) {
+      case 'started':
+        console.log('SipML5: Stack started, creating registration session');
+        this.isStackStarted = true;
+        this.createRegisterSession();
+        break;
+        
+      case 'i_new_call':
+        console.log('SipML5: Incoming call');
+        this.handleIncomingCall(event.newSession);
+        break;
+        
+      case 'failed_to_start':
+        console.error('SipML5: Failed to start stack');
+        this.isStackStarted = false;
+        this.onRegistrationStateChanged?.(false);
+        break;
+        
+      case 'stopped':
+        console.log('SipML5: Stack stopped');
+        this.isStackStarted = false;
+        this.onRegistrationStateChanged?.(false);
+        break;
+        
+      case 'm_permission_requested':
+        console.log('SipML5: Media permission requested');
+        break;
+        
+      case 'm_permission_accepted':
+        console.log('SipML5: Media permission accepted');
+        break;
+        
+      case 'm_permission_refused':
+        console.error('SipML5: Media permission refused');
+        break;
+    }
+  }
+
+  private createRegisterSession() {
+    if (!this.sipStack || !this.isStackStarted) {
+      console.warn('SipML5: Cannot create registration session - stack not ready');
+      return;
+    }
+
+    try {
+      this.regSession = this.sipStack.newSession('register', {
+        events_listener: {
+          events: '*',
+          listener: this.handleRegisterEvent.bind(this)
+        }
+      });
+
+      const result = this.regSession.register();
+      if (result !== 0) {
+        console.error('SipML5: Registration failed with code:', result);
+      } else {
+        console.log('SipML5: Registration session created and started');
+      }
+    } catch (error) {
+      console.error('SipML5: Failed to create registration session:', error);
+    }
+  }
+
+  private handleRegisterEvent(event: any) {
+    console.log('SipML5: Register event:', event.type, event);
+    
+    switch (event.type) {
+      case 'connected':
+        console.log('SipML5: Registered successfully');
+        this.onRegistrationStateChanged?.(true);
+        break;
+        
+      case 'disconnected':
+        console.log('SipML5: Unregistered');
+        this.onRegistrationStateChanged?.(false);
+        break;
+        
+      case 'failed':
+        console.error('SipML5: Registration failed');
+        this.onRegistrationStateChanged?.(false);
+        break;
+    }
+  }
+
+  private handleIncomingCall(session: any) {
+    this.callSession = session;
+    const remoteUser = session.getRemoteFriendlyName() || 'Unknown';
+    this.currentRemoteNumber = remoteUser;
+    
+    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser });
+    
+    // Set up call event handlers
+    session.setConfiguration({
+      events_listener: {
+        events: '*',
+        listener: this.handleCallEvent.bind(this)
+      }
+    });
+  }
+
+  private handleCallEvent(event: any) {
+    console.log('SipML5: Call event:', event.type, event);
+    
+    switch (event.type) {
+      case 'connecting':
+        this.onCallStateChanged?.({ status: 'connecting', remoteNumber: this.currentRemoteNumber });
+        break;
+        
+      case 'connected':
+        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber });
+        break;
+        
+      case 'terminating':
+      case 'terminated':
+        this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber });
+        this.currentRemoteNumber = undefined;
+        this.callSession = null;
+        this.cleanupAudio();
+        break;
+        
+      case 'failed':
+        this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber });
+        this.currentRemoteNumber = undefined;
+        this.callSession = null;
+        this.cleanupAudio();
+        break;
+    }
+  }
+
+  async makeCall(number: string): Promise<void> {
+    if (!this.sipStack || !this.config) {
+      throw new Error('SipML5 service not configured');
+    }
+    
+    if (!this.isStackStarted) {
+      throw new Error('SipML5 stack not started yet');
+    }
+
+    try {
+      this.currentRemoteNumber = number;
+      const domain = this.config.domain || this.config.server;
+      const target = `sip:${number}@${domain}`;
+      
+      console.log('SipML5: Making call to', target);
+      
+      // Create and configure remote audio element
+      this.remoteAudio = document.createElement('audio');
+      this.remoteAudio.autoplay = true;
+      this.remoteAudio.controls = false;
+      this.remoteAudio.style.display = 'none';
+      document.body.appendChild(this.remoteAudio);
+      
+      this.callSession = this.sipStack.newSession('call-audio', {
+        audio_remote: this.remoteAudio,
+        events_listener: {
+          events: '*',
+          listener: this.handleCallEvent.bind(this)
+        }
+      });
+
+      this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
+      
+      const result = this.callSession.call(target);
+      if (result !== 0) {
+        throw new Error(`Failed to make call: ${result}`);
+      }
+      
+    } catch (error) {
+      this.onCallStateChanged?.({ status: 'failed' });
+      console.error('SipML5: Failed to make call:', error);
+      throw error;
+    }
+  }
+
+  async answerCall(): Promise<void> {
+    if (this.callSession) {
+      try {
+        // Create and configure remote audio element if not already created
+        if (!this.remoteAudio) {
+          this.remoteAudio = document.createElement('audio');
+          this.remoteAudio.autoplay = true;
+          this.remoteAudio.controls = false;
+          this.remoteAudio.style.display = 'none';
+          document.body.appendChild(this.remoteAudio);
+        }
+        
+        const result = this.callSession.accept({
+          audio_remote: this.remoteAudio
+        });
+        
+        if (result !== 0) {
+          throw new Error(`Failed to answer call: ${result}`);
+        }
+        
+        console.log('SipML5: Call answered');
+      } catch (error) {
+        console.error('SipML5: Failed to answer call:', error);
+      }
+    }
+  }
+
+  async hangup(): Promise<void> {
+    if (this.callSession) {
+      try {
+        this.callSession.hangup();
+        console.log('SipML5: Call terminated');
+      } catch (error) {
+        console.error('SipML5: Failed to hangup:', error);
+      }
+    }
+  }
+
+  private cleanupAudio() {
+    if (this.remoteAudio && document.body.contains(this.remoteAudio)) {
+      document.body.removeChild(this.remoteAudio);
+      this.remoteAudio = undefined;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      if (this.callSession) {
+        this.callSession.hangup();
+        this.callSession = null;
+      }
+      
+      if (this.regSession) {
+        this.regSession.unregister();
+        this.regSession = null;
+      }
+      
+      if (this.sipStack) {
+        this.sipStack.stop();
+        this.sipStack = null;
+        this.isStackStarted = false;
+      }
+      
+      this.cleanupAudio();
+      console.log('SipML5: Disconnected');
+    } catch (error) {
+      console.error('SipML5: Failed to disconnect:', error);
+    }
+  }
+
+  isRegistered(): boolean {
+    return this.regSession && this.regSession.isConnected();
+  }
+
+  getCurrentCallState(): CallState {
+    if (!this.callSession) {
+      return { status: 'idle' };
+    }
+    
+    if (this.callSession.isConnected()) {
+      return { status: 'connected' };
+    } else if (this.callSession.isConnecting()) {
+      return { status: 'connecting' };
+    } else {
+      return { status: 'idle' };
+    }
+  }
+}
