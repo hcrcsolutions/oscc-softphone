@@ -163,7 +163,9 @@ export class SipService {
         uri: new URI('sip', this.config.username, domain),
         transportOptions: {
           server: serverUrl,
-          traceSip: true
+          traceSip: true,
+          hackViaTcp: true,
+          reconnectionAttempts: 2
         },
         authorizationUsername: this.config.username,
         authorizationPassword: this.config.password,
