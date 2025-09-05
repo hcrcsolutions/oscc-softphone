@@ -16,6 +16,7 @@ export default function Phone2({ theme }: Phone2Props) {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
+  const [extension, setExtension] = useState<string>('');
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const sipService = useRef<SipML5Service>(new SipML5Service());
@@ -97,6 +98,7 @@ export default function Phone2({ theme }: Phone2Props) {
         if (savedConfig) {
           const config: SipML5Config = JSON.parse(savedConfig);
           console.log('Phone2: Loading saved config for SipML5:', { ...config, password: config.password ? '***' : 'EMPTY' });
+          setExtension(config.username);
           
           // Only configure if we have a password
           if (config.password && config.password.trim() !== '') {
@@ -211,7 +213,7 @@ export default function Phone2({ theme }: Phone2Props) {
     <div className="p-8">
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-        <h2 className="text-3xl font-bold">Phone (SipML5)</h2>
+        <h2 className="text-3xl font-bold">Phone (SipML5){extension ? ` - ${extension}` : ''}</h2>
         <div className="flex gap-2">
           <div className={`badge ${getStatusColor()}`}>
             {getStatusText()}
@@ -219,11 +221,6 @@ export default function Phone2({ theme }: Phone2Props) {
           <div className="badge badge-outline">
             Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
           </div>
-          {!audioEnabled && !isLoading && (
-            <button onClick={enableAudio} className="btn btn-xs btn-warning">
-              Enable Audio
-            </button>
-          )}
         </div>
       </div>
       
@@ -258,7 +255,8 @@ export default function Phone2({ theme }: Phone2Props) {
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
                     <button 
                       key={digit} 
-                      className="btn btn-circle btn-outline w-20 h-20 text-2xl font-bold"
+                      className="btn btn-circle btn-outline text-6xl font-bold"
+                      style={{ width: '4rem', height: '4rem', fontSize: '2rem' }}
                       onClick={() => handleDigitClick(digit)}
                     >
                       {digit}

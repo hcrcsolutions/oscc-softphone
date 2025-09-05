@@ -15,6 +15,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming', duration?: string}>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
+  const [extension, setExtension] = useState<string>('');
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const sipService = useRef<SipService>(new SipService());
@@ -94,6 +95,7 @@ export default function Phone({ theme }: PhoneProps) {
     if (savedConfig) {
       try {
         const config: SipConfig = JSON.parse(savedConfig);
+        setExtension(config.username);
         service.configure(config).catch(console.error);
       } catch (error) {
         console.error('Failed to load SIP configuration:', error);
@@ -193,7 +195,7 @@ export default function Phone({ theme }: PhoneProps) {
     <div className="p-8">
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-        <h2 className="text-3xl font-bold">Phone</h2>
+        <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>
         <div className="flex gap-2">
           <div className={`badge ${getStatusColor()}`}>
             {getStatusText()}
@@ -201,11 +203,6 @@ export default function Phone({ theme }: PhoneProps) {
           <div className="badge badge-outline">
             Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
           </div>
-          {!audioEnabled && (
-            <button onClick={enableAudio} className="btn btn-xs btn-warning">
-              Enable Audio
-            </button>
-          )}
         </div>
       </div>
       
@@ -233,7 +230,8 @@ export default function Phone({ theme }: PhoneProps) {
               {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
                 <button 
                   key={digit} 
-                  className="btn btn-circle btn-outline w-20 h-20 text-2xl font-bold"
+                  className="btn btn-circle btn-outline text-6xl font-bold"
+                  style={{ width: '4rem', height: '4rem', fontSize: '2rem' }}
                   onClick={() => handleDigitClick(digit)}
                 >
                   {digit}
