@@ -29,14 +29,15 @@ export default function Avatar() {
 
   return (
     <div className="dropdown dropdown-end">
-      <div tabIndex={0} role="button" className="btn btn-ghost btn-circle avatar">
-        <div className="w-10 rounded-full">
+      <div tabIndex={0} role="button" className="btn btn-ghost btn-circle avatar rounded-full" style={{ borderRadius: '9999px' }}>
+        <div className="w-10 rounded-full overflow-hidden" style={{ borderRadius: '9999px' }}>
           <Image
             alt="Avatar"
             src="https://img.daisyui.com/images/stock/photo-1534528741775-53994a69daeb.webp"
             width={40}
             height={40}
             className="rounded-full"
+            style={{ borderRadius: '9999px' }}
           />
         </div>
       </div>
