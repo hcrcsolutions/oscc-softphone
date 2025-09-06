@@ -255,8 +255,8 @@ export default function Phone2({ theme }: Phone2Props) {
                   {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
                     <button 
                       key={digit} 
-                      className="btn btn-circle btn-outline text-6xl font-bold"
-                      style={{ width: '4rem', height: '4rem', fontSize: '2rem' }}
+                      className="btn btn-circle btn-outline rounded-full text-6xl font-bold"
+                      style={{ width: '4rem', height: '4rem', fontSize: '2rem', borderRadius: '9999px' }}
                       onClick={() => handleDigitClick(digit)}
                     >
                       {digit}
