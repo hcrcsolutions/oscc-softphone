@@ -327,7 +327,7 @@ export class SipML5Service {
         
         let failErrorMessage = 'Call failed.';
         let failErrorCode = 'CALL_FAILED';
-        const failError = session.getLastError?.();
+        const failError = this.callSession?.getLastError?.();
         
         if (failError === 486) {
           failErrorMessage = 'The number is busy. Please try again later.';
