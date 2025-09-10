@@ -115,6 +115,27 @@ export class SipML5Service {
     }
   }
 
+  private muteAllInactiveCalls() {
+    // Mute all calls except the active one
+    for (const [sessionId, audio] of this.sessionAudioElements.entries()) {
+      const callInfo = this.callInfos.get(sessionId);
+      if (callInfo) {
+        // Mute if: not active session OR call is on hold
+        const shouldMute = sessionId !== this.activeSessionId || callInfo.isOnHold;
+        audio.muted = shouldMute;
+        console.log(`SipML5: Audio ${shouldMute ? 'muted' : 'unmuted'} for session ${sessionId} (active: ${sessionId === this.activeSessionId}, onHold: ${callInfo.isOnHold})`);
+      }
+    }
+  }
+
+  private setAudioForSession(sessionId: string, muted: boolean) {
+    const audio = this.sessionAudioElements.get(sessionId);
+    if (audio) {
+      audio.muted = muted;
+      console.log(`SipML5: Audio ${muted ? 'muted' : 'unmuted'} for session ${sessionId}`);
+    }
+  }
+
   private setupAudioContext() {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -527,6 +548,8 @@ export class SipML5Service {
         this.stopRingbackTone(); // Stop ringback tone when call connects
         this.stopRingtone(); // Stop ringtone when call connects
         console.log('SipML5: Call connected, audio feedback stopped');
+        // Manage audio: mute all other calls, unmute this one
+        this.muteAllInactiveCalls();
         this.updateCallState(sessionId, 'connected');
         break;
         
@@ -611,6 +634,10 @@ export class SipML5Service {
     if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
       this.activeSessionId = sessionId;
       const callInfo = this.callInfos.get(sessionId)!;
+      
+      // Manage audio: mute all calls except the new active one
+      this.muteAllInactiveCalls();
+      
       this.updateCallState(sessionId, 'connected');
       return true;
     }
@@ -883,6 +910,9 @@ export class SipML5Service {
           activeCallInfo.isOnHold = true;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
           
+          // Mute the audio for this held call
+          this.setAudioForSession(activeCallInfo.sessionId, true);
+          
           this.updateCallState(activeCallInfo.sessionId, 'connected');
           
           console.log('SipML5: Call placed on hold');
@@ -913,6 +943,9 @@ export class SipML5Service {
           // Update call info
           activeCallInfo.isOnHold = false;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
+          // Manage audio: unmute this call and mute all others
+          this.muteAllInactiveCalls();
           
           this.updateCallState(activeCallInfo.sessionId, 'connected');
           

@@ -391,6 +391,27 @@ export class SipService {
     }
   }
 
+  private muteAllInactiveCalls() {
+    // Mute all calls except the active one
+    for (const [sessionId, audio] of this.sessionAudioElements.entries()) {
+      const callInfo = this.callInfos.get(sessionId);
+      if (callInfo) {
+        // Mute if: not active session OR call is on hold
+        const shouldMute = sessionId !== this.activeSessionId || callInfo.isOnHold;
+        audio.muted = shouldMute;
+        console.log(`Audio ${shouldMute ? 'muted' : 'unmuted'} for session ${sessionId} (active: ${sessionId === this.activeSessionId}, onHold: ${callInfo.isOnHold})`);
+      }
+    }
+  }
+
+  private setAudioForSession(sessionId: string, muted: boolean) {
+    const audio = this.sessionAudioElements.get(sessionId);
+    if (audio) {
+      audio.muted = muted;
+      console.log(`Audio ${muted ? 'muted' : 'unmuted'} for session ${sessionId}`);
+    }
+  }
+
   private async connect(): Promise<void> {
     if (!this.config) {
       const error = new Error('SIP configuration not set');
@@ -534,6 +555,8 @@ export class SipService {
           this.stopRingbackTone(); // Stop ringback tone if any
           this.stopRingtone(); // Stop ringtone when call is answered
           this.setupAudioStreams(invitation, sessionId);
+          // Manage audio: mute all other calls, unmute this one
+          this.muteAllInactiveCalls();
           this.updateCallState(sessionId, 'connected');
           break;
         case SessionState.Terminated:
@@ -554,6 +577,10 @@ export class SipService {
     if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
       this.activeSessionId = sessionId;
       const callInfo = this.callInfos.get(sessionId)!;
+      
+      // Manage audio: mute all calls except the new active one
+      this.muteAllInactiveCalls();
+      
       this.updateCallState(sessionId, 'connected');
       return true;
     }
@@ -629,6 +656,8 @@ export class SipService {
           case SessionState.Established:
             this.stopRingbackTone(); // Stop ringback tone when call is connected
             this.setupAudioStreams(session, sessionId);
+            // Manage audio: mute all other calls, unmute this one
+            this.muteAllInactiveCalls();
             this.updateCallState(sessionId, 'connected');
             break;
           case SessionState.Terminated:
@@ -817,6 +846,8 @@ export class SipService {
           activeCallInfo.isOnHold = true;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
           
+          // Mute the audio for this held call
+          this.setAudioForSession(activeCallInfo.sessionId, true);
           
           console.log('Call placed on hold');
         }
@@ -851,6 +882,8 @@ export class SipService {
           activeCallInfo.isOnHold = false;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
           
+          // Manage audio: unmute this call and mute all others
+          this.muteAllInactiveCalls();
           
           console.log('Call resumed from hold');
         }
