@@ -14,6 +14,8 @@ export interface CallState {
   errorMessage?: string;
   errorCode?: string;
   isOnHold?: boolean;
+  sessionId?: string;
+  activeCalls?: CallInfo[];
 }
 
 export interface CallInfo {
@@ -66,18 +68,46 @@ export class SipML5Service {
     return this.activeSessionId ? this.callInfos.get(this.activeSessionId) : undefined;
   }
 
-  private updateCallState(sessionId: string, status?: CallState['status']): void {
-    const callInfo = this.callInfos.get(sessionId);
-    if (!callInfo) return;
+  private getCallInfosArray(): CallInfo[] {
+    return Array.from(this.callInfos.values());
+  }
 
-    const callState: CallState = {
-      status: status || (this.getActiveSession()?.state === 'established' ? 'connected' : 'idle'),
+  private updateCallState(sessionId?: string, status?: CallState['status']): void {
+    const activeCalls = this.getCallInfosArray();
+    
+    if (activeCalls.length === 0) {
+      this.onCallStateChanged?.({ 
+        status: 'idle',
+        activeCalls: []
+      });
+      return;
+    }
+
+    // If no specific session, use active session or first available
+    const targetSessionId = sessionId || this.activeSessionId || activeCalls[0].sessionId;
+    const callInfo = this.callInfos.get(targetSessionId);
+    const session = this.sessions.get(targetSessionId);
+
+    if (!callInfo || !session) return;
+
+    // Use provided status or determine from session state
+    let finalStatus: CallState['status'] = status || 'connected';
+    if (!status && session.state) {
+      if (session.state === 'initial' || session.state === 'connecting') {
+        finalStatus = 'connecting';
+      } else if (session.state === 'terminated') {
+        finalStatus = 'idle';
+      }
+    }
+
+    this.onCallStateChanged?.({
+      status: finalStatus,
       remoteNumber: callInfo.remoteNumber,
       direction: callInfo.direction,
-      isOnHold: callInfo.isOnHold
-    };
-
-    this.onCallStateChanged?.(callState);
+      isOnHold: callInfo.isOnHold,
+      sessionId: targetSessionId,
+      activeCalls
+    });
   }
 
   private createAudioElementForSession(sessionId: string): HTMLAudioElement {
@@ -150,7 +180,7 @@ export class SipML5Service {
       // Stop any existing ringback tone
       this.stopRingbackTone();
 
-      // Create ringback tone pattern (440Hz + 480Hz, 2s on, 4s off)
+      // Create ringback tone pattern (350Hz + 440Hz, 2s on, 4s off)
       const playRingback = () => {
         if (!this.audioContext) return;
         
@@ -158,8 +188,9 @@ export class SipML5Service {
         const oscillator2 = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
-        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
-        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        // Outgoing ringback: 350Hz + 440Hz (lower pitch, different from incoming)
+        oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
+        oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
         
         gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime);
 
@@ -236,6 +267,7 @@ export class SipML5Service {
         const oscillator2 = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
+        // Incoming ringtone: 440Hz + 480Hz (traditional phone ring)
         oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
         oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
         
@@ -557,13 +589,29 @@ export class SipML5Service {
       case 'terminated':
         this.stopRingbackTone(); // Stop any audio feedback
         this.stopRingtone();
+        
+        // Send terminated callback with call info before cleanup
+        const callInfo = this.callInfos.get(sessionId);
+        if (callInfo) {
+          this.onCallStateChanged?.({
+            status: 'idle',
+            remoteNumber: callInfo.remoteNumber,
+            direction: callInfo.direction,
+            sessionId: sessionId,
+            activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
+          });
+        }
+        
         this.sessions.delete(sessionId);
         this.callInfos.delete(sessionId);
         if (this.activeSessionId === sessionId) {
           this.activeSessionId = undefined;
         }
-        this.updateCallState(sessionId, 'idle');
+        
         this.cleanupAudioForSession(sessionId);
+        
+        // Send updated state for remaining calls
+        this.updateCallState();
         break;
         
       case 'failed':
@@ -587,13 +635,15 @@ export class SipML5Service {
           failErrorCode = 'TIMEOUT';
         }
         
-        this.onCallStateChanged?.({
-          status: 'failed',
-          remoteNumber: callInfo.remoteNumber,
-          direction: callInfo.direction,
-          errorMessage: failErrorMessage,
-          errorCode: failErrorCode
-        });
+        if (callInfo) {
+          this.onCallStateChanged?.({
+            status: 'failed',
+            remoteNumber: callInfo.remoteNumber,
+            direction: callInfo.direction,
+            errorMessage: failErrorMessage,
+            errorCode: failErrorCode
+          });
+        }
         
         // Clean up failed session
         this.sessions.delete(sessionId);

@@ -173,7 +173,7 @@ export class SipService {
       // Stop any existing ringback tone
       this.stopRingbackTone();
 
-      // Create ringback tone pattern (440Hz + 480Hz, 2s on, 4s off)
+      // Create ringback tone pattern (350Hz + 440Hz, 2s on, 4s off)
       const playRingback = () => {
         if (!this.audioContext) return;
         
@@ -181,8 +181,9 @@ export class SipService {
         const oscillator2 = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
-        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
-        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        // Outgoing ringback: 350Hz + 440Hz (lower pitch, different from incoming)
+        oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
+        oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
         
         gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime); // Moderate volume
 
@@ -259,6 +260,7 @@ export class SipService {
         const oscillator2 = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
+        // Incoming ringtone: 440Hz + 480Hz (traditional phone ring)
         oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
         oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
         
@@ -561,12 +563,27 @@ export class SipService {
           break;
         case SessionState.Terminated:
           this.cleanupAudioForSession(sessionId);
+          
+          // Send terminated callback with call info before cleanup
+          const callInfo = this.callInfos.get(sessionId);
+          if (callInfo) {
+            this.onCallStateChanged?.({
+              status: 'idle',
+              remoteNumber: callInfo.remoteNumber,
+              direction: callInfo.direction,
+              sessionId: sessionId,
+              activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
+            });
+          }
+          
           this.sessions.delete(sessionId);
           this.callInfos.delete(sessionId);
           if (this.activeSessionId === sessionId) {
             this.activeSessionId = undefined;
           }
-          this.updateCallState(sessionId, 'idle');
+          
+          // Send updated state for remaining calls
+          this.updateCallState();
           break;
       }
     });
@@ -664,12 +681,27 @@ export class SipService {
             this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
             this.cleanupAudioForSession(sessionId);
+            
+            // Send terminated callback with call info before cleanup
+            const callInfo = this.callInfos.get(sessionId);
+            if (callInfo) {
+              this.onCallStateChanged?.({
+                status: 'idle',
+                remoteNumber: callInfo.remoteNumber,
+                direction: callInfo.direction,
+                sessionId: sessionId,
+                activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
+              });
+            }
+            
             this.sessions.delete(sessionId);
             this.callInfos.delete(sessionId);
             if (this.activeSessionId === sessionId) {
               this.activeSessionId = undefined;
             }
-            this.updateCallState(sessionId, 'idle');
+            
+            // Send updated state for remaining calls
+            this.updateCallState();
             break;
         }
       });
