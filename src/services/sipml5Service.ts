@@ -16,6 +16,14 @@ export interface CallState {
   isOnHold?: boolean;
 }
 
+export interface CallInfo {
+  sessionId: string;
+  remoteNumber: string;
+  isOnHold: boolean;
+  direction: 'incoming' | 'outgoing';
+  startTime?: Date;
+}
+
 // Declare global SIPml for TypeScript
 declare global {
   interface Window {
@@ -26,17 +34,16 @@ declare global {
 export class SipML5Service {
   private sipStack?: any;
   private regSession?: any;
-  private callSession?: any;
+  private sessions: Map<string, any> = new Map(); // sessionId -> SIPml session
+  private callInfos: Map<string, CallInfo> = new Map(); // sessionId -> call info
+  private activeSessionId?: string;
   private config?: SipML5Config;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
   private isInitialized = false;
   private isStackStarted = false;
-  private currentRemoteNumber?: string;
-  private currentCallDirection?: 'incoming' | 'outgoing';
   private remoteAudio?: HTMLAudioElement;
   private loadPromise?: Promise<void>;
-  private isCurrentCallOnHold: boolean = false;
   private audioContext?: AudioContext;
   private ringbackOscillators: OscillatorNode[] = [];
   private ringbackInterval?: NodeJS.Timeout;
@@ -44,6 +51,33 @@ export class SipML5Service {
 
   constructor() {
     this.loadSipML5();
+  }
+
+  // Helper methods for multi-session management
+  private generateSessionId(): string {
+    return `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private getActiveSession(): any {
+    return this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+  }
+
+  private getActiveCallInfo(): CallInfo | undefined {
+    return this.activeSessionId ? this.callInfos.get(this.activeSessionId) : undefined;
+  }
+
+  private updateCallState(sessionId: string, status?: CallState['status']): void {
+    const callInfo = this.callInfos.get(sessionId);
+    if (!callInfo) return;
+
+    const callState: CallState = {
+      status: status || (this.getActiveSession()?.state === 'established' ? 'connected' : 'idle'),
+      remoteNumber: callInfo.remoteNumber,
+      direction: callInfo.direction,
+      isOnHold: callInfo.isOnHold
+    };
+
+    this.onCallStateChanged?.(callState);
   }
 
   private setupAudioContext() {
@@ -432,50 +466,45 @@ export class SipML5Service {
     }
   }
 
-  private handleIncomingCall(session: any) {
-    this.callSession = session;
-    const remoteUser = session.getRemoteFriendlyName() || 'Unknown';
-    this.currentRemoteNumber = remoteUser;
-    this.currentCallDirection = 'incoming';
-    
-    // Start ringtone for incoming call
-    this.generateRingtone();
-    
-    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
-    
-    // Set up call event handlers
-    session.setConfiguration({
-      events_listener: {
-        events: '*',
-        listener: this.handleCallEvent.bind(this)
-      }
-    });
-  }
 
-  private handleCallEvent(event: any) {
-    console.log('SipML5: Call event:', event.type, event);
+  private handleCallEvent(event: any, sessionId?: string) {
+    console.log('SipML5: Call event:', event.type, event, 'sessionId:', sessionId);
+    
+    // If no sessionId provided, this might be an old call or incoming call
+    if (!sessionId && event.type === 'incoming') {
+      this.handleIncomingCall(event);
+      return;
+    }
+    
+    if (!sessionId) return;
+    
+    const callInfo = this.callInfos.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    
+    if (!callInfo || !session) return;
     
     switch (event.type) {
       case 'connecting':
-        this.onCallStateChanged?.({ status: 'connecting', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
+        this.updateCallState(sessionId, 'connecting');
         break;
         
       case 'connected':
         this.stopRingbackTone(); // Stop ringback tone when call connects
         this.stopRingtone(); // Stop ringtone when call connects
         console.log('SipML5: Call connected, audio feedback stopped');
-        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection, isOnHold: false });
+        this.updateCallState(sessionId, 'connected');
         break;
         
       case 'terminating':
       case 'terminated':
-        this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
         this.stopRingbackTone(); // Stop any audio feedback
         this.stopRingtone();
-        this.currentRemoteNumber = undefined;
-        this.currentCallDirection = undefined;
-        this.callSession = null;
-        this.isCurrentCallOnHold = false;
+        this.sessions.delete(sessionId);
+        this.callInfos.delete(sessionId);
+        if (this.activeSessionId === sessionId) {
+          this.activeSessionId = undefined;
+        }
+        this.updateCallState(sessionId, 'idle');
         this.cleanupAudio();
         break;
         
@@ -484,7 +513,7 @@ export class SipML5Service {
         
         let failErrorMessage = 'Call failed.';
         let failErrorCode = 'CALL_FAILED';
-        const failError = this.callSession?.getLastError?.();
+        const failError = session?.getLastError?.();
         
         if (failError === 486) {
           failErrorMessage = 'The number is busy. Please try again later.';
@@ -502,20 +531,78 @@ export class SipML5Service {
         
         this.onCallStateChanged?.({
           status: 'failed',
-          remoteNumber: this.currentRemoteNumber,
-          direction: this.currentCallDirection,
+          remoteNumber: callInfo.remoteNumber,
+          direction: callInfo.direction,
           errorMessage: failErrorMessage,
           errorCode: failErrorCode
         });
         
-        this.stopRingbackTone(); // Stop any audio feedback
-        this.stopRingtone();
-        this.currentRemoteNumber = undefined;
-        this.currentCallDirection = undefined;
-        this.callSession = null;
-        this.isCurrentCallOnHold = false;
+        // Clean up failed session
+        this.sessions.delete(sessionId);
+        this.callInfos.delete(sessionId);
+        if (this.activeSessionId === sessionId) {
+          this.activeSessionId = undefined;
+        }
         this.cleanupAudio();
         break;
+    }
+  }
+
+  private handleIncomingCall(event: any) {
+    const sessionId = this.generateSessionId();
+    const remoteNumber = event.session?.getRemoteNumber?.() || 'Unknown';
+    
+    // Store session and call info
+    this.sessions.set(sessionId, event.session);
+    this.callInfos.set(sessionId, {
+      sessionId,
+      remoteNumber: remoteNumber,
+      isOnHold: false,
+      direction: 'incoming',
+      startTime: new Date()
+    });
+    
+    // Set as active session
+    this.activeSessionId = sessionId;
+    
+    // Start ringtone for incoming call
+    this.generateRingtone();
+    
+    this.updateCallState(sessionId, 'ringing');
+  }
+
+  // Multi-call management methods
+  switchToCall(sessionId: string): boolean {
+    if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
+      this.activeSessionId = sessionId;
+      const callInfo = this.callInfos.get(sessionId)!;
+      this.updateCallState(sessionId, 'connected');
+      return true;
+    }
+    return false;
+  }
+
+  getAllActiveCalls(): CallInfo[] {
+    return Array.from(this.callInfos.values());
+  }
+
+  getCallInfo(sessionId: string): CallInfo | undefined {
+    return this.callInfos.get(sessionId);
+  }
+
+  async endCall(sessionId?: string): Promise<void> {
+    const targetSessionId = sessionId || this.activeSessionId;
+    if (!targetSessionId) return;
+    
+    const session = this.sessions.get(targetSessionId);
+    if (session) {
+      try {
+        session.hangup();
+      } catch (error) {
+        console.warn('Error ending call:', error);
+      }
+      
+      // Cleanup will be handled by the event listener
     }
   }
 
@@ -541,8 +628,7 @@ export class SipML5Service {
     }
 
     try {
-      this.currentRemoteNumber = number;
-      this.currentCallDirection = 'outgoing';
+      const sessionId = this.generateSessionId();
       const domain = this.config.domain || this.config.server;
       const target = `sip:${number}@${domain}`;
       
@@ -555,20 +641,33 @@ export class SipML5Service {
       this.remoteAudio.style.display = 'none';
       document.body.appendChild(this.remoteAudio);
       
-      this.callSession = this.sipStack.newSession('call-audio', {
+      const callSession = this.sipStack.newSession('call-audio', {
         audio_remote: this.remoteAudio,
         events_listener: {
           events: '*',
-          listener: this.handleCallEvent.bind(this)
+          listener: (event: any) => this.handleCallEvent(event, sessionId)
         }
       });
 
-      this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
+      // Store session and call info
+      this.sessions.set(sessionId, callSession);
+      this.callInfos.set(sessionId, {
+        sessionId,
+        remoteNumber: number,
+        isOnHold: false,
+        direction: 'outgoing',
+        startTime: new Date()
+      });
+
+      // Set as active session
+      this.activeSessionId = sessionId;
+
+      this.updateCallState(sessionId, 'connecting');
       
       // Start ringback tone for outgoing call
       this.generateRingbackTone();
       
-      const result = this.callSession.call(target);
+      const result = callSession.call(target);
       if (result !== 0) {
         let errorMessage = 'Failed to make call.';
         let errorCode = 'CALL_FAILED';
@@ -622,7 +721,8 @@ export class SipML5Service {
   }
 
   async answerCall(): Promise<void> {
-    if (this.callSession) {
+    const activeSession = this.getActiveSession();
+    if (activeSession) {
       try {
         // Create and configure remote audio element if not already created
         if (!this.remoteAudio) {
@@ -638,29 +738,29 @@ export class SipML5Service {
         this.stopRingtone();
         
         // Try immediate accept first
-        let result = this.callSession.accept({
+        let result = activeSession.accept({
           audio_remote: this.remoteAudio
         });
         
         // If immediate accept failed, wait briefly and retry
-        if (result !== 0 && result === -1 && this.callSession.isConnecting && this.callSession.isConnecting()) {
+        if (result !== 0 && result === -1 && activeSession.isConnecting && activeSession.isConnecting()) {
           console.log('SipML5: Immediate accept failed, session connecting, waiting briefly...');
           
           let attempts = 0;
           const maxAttempts = 3; // Reduced attempts
           
-          while (this.callSession.isConnecting && this.callSession.isConnecting() && attempts < maxAttempts) {
+          while (activeSession.isConnecting && activeSession.isConnecting() && attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
             attempts++;
             console.log(`SipML5: Retry attempt ${attempts}`);
             
             // Check if session was terminated while waiting
-            if (!this.callSession || (this.callSession.isTerminated && this.callSession.isTerminated())) {
+            if (!activeSession || (activeSession.isTerminated && activeSession.isTerminated())) {
               throw new Error('Call was terminated before it could be answered');
             }
             
             // Try accepting again
-            result = this.callSession.accept({
+            result = activeSession.accept({
               audio_remote: this.remoteAudio
             });
             
@@ -682,9 +782,10 @@ export class SipML5Service {
             errorCode = 'SYSTEM_ERROR';
           }
           
+          const activeCallInfo = this.getActiveCallInfo();
           this.onCallStateChanged?.({
             status: 'failed',
-            remoteNumber: this.currentRemoteNumber,
+            remoteNumber: activeCallInfo?.remoteNumber,
             errorMessage,
             errorCode
           });
@@ -712,9 +813,10 @@ export class SipML5Service {
           errorMessage = 'Failed to answer call. Please check your microphone settings.';
         }
         
+        const activeCallInfo = this.getActiveCallInfo();
         this.onCallStateChanged?.({
           status: 'failed',
-          remoteNumber: this.currentRemoteNumber,
+          remoteNumber: activeCallInfo?.remoteNumber,
           errorMessage,
           errorCode
         });
@@ -725,9 +827,10 @@ export class SipML5Service {
   }
 
   async hangup(): Promise<void> {
-    if (this.callSession) {
+    const activeSession = this.getActiveSession();
+    if (activeSession) {
       try {
-        this.callSession.hangup();
+        activeSession.hangup();
         console.log('SipML5: Call terminated');
       } catch (error) {
         console.error('SipML5: Failed to hangup:', error);
@@ -736,23 +839,24 @@ export class SipML5Service {
   }
 
   async holdCall(): Promise<void> {
-    if (this.callSession && this.callSession.isConnected()) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (activeSession && activeSession.isConnected() && activeCallInfo) {
       try {
-        if (!this.isCurrentCallOnHold) {
+        if (!activeCallInfo.isOnHold) {
           // SipML5 hold implementation - use dtmf or mute approach
-          const result = this.callSession.hold();
+          const result = activeSession.hold();
           if (result !== 0) {
             // Fallback to muting if hold is not supported
-            this.callSession.mute('audio');
+            activeSession.mute('audio');
           }
           
-          this.isCurrentCallOnHold = true;
-          this.onCallStateChanged?.({ 
-            status: 'connected', 
-            remoteNumber: this.currentRemoteNumber, 
-            direction: this.currentCallDirection,
-            isOnHold: true
-          });
+          // Update call info
+          activeCallInfo.isOnHold = true;
+          this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
+          this.updateCallState(activeCallInfo.sessionId, 'connected');
           
           console.log('SipML5: Call placed on hold');
         }
@@ -766,23 +870,24 @@ export class SipML5Service {
   }
 
   async unholdCall(): Promise<void> {
-    if (this.callSession && this.callSession.isConnected()) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (activeSession && activeSession.isConnected() && activeCallInfo) {
       try {
-        if (this.isCurrentCallOnHold) {
+        if (activeCallInfo.isOnHold) {
           // SipML5 unhold implementation
-          const result = this.callSession.resume ? this.callSession.resume() : this.callSession.unhold();
+          const result = activeSession.resume ? activeSession.resume() : activeSession.unhold();
           if (result !== 0) {
             // Fallback to unmuting if unhold is not supported
-            this.callSession.unmute('audio');
+            activeSession.unmute('audio');
           }
           
-          this.isCurrentCallOnHold = false;
-          this.onCallStateChanged?.({ 
-            status: 'connected', 
-            remoteNumber: this.currentRemoteNumber, 
-            direction: this.currentCallDirection,
-            isOnHold: false
-          });
+          // Update call info
+          activeCallInfo.isOnHold = false;
+          this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
+          this.updateCallState(activeCallInfo.sessionId, 'connected');
           
           console.log('SipML5: Call resumed from hold');
         }
@@ -804,10 +909,15 @@ export class SipML5Service {
 
   async disconnect(): Promise<void> {
     try {
-      if (this.callSession) {
-        this.callSession.hangup();
-        this.callSession = null;
+      const activeSession = this.getActiveSession();
+      if (activeSession) {
+        activeSession.hangup();
       }
+      
+      // Clear all sessions and call info
+      this.sessions.clear();
+      this.callInfos.clear();
+      this.activeSessionId = undefined;
       
       if (this.regSession) {
         this.regSession.unregister();
@@ -831,7 +941,6 @@ export class SipML5Service {
         this.audioContext = undefined;
       }
       
-      this.isCurrentCallOnHold = false;
       console.log('SipML5: Disconnected');
     } catch (error: any) {
       console.error('SipML5: Failed to disconnect:', error);
@@ -844,14 +953,26 @@ export class SipML5Service {
   }
 
   getCurrentCallState(): CallState {
-    if (!this.callSession) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (!activeSession || !activeCallInfo) {
       return { status: 'idle' };
     }
     
-    if (this.callSession.isConnected()) {
-      return { status: 'connected' };
-    } else if (this.callSession.isConnecting()) {
-      return { status: 'connecting' };
+    if (activeSession.isConnected()) {
+      return { 
+        status: 'connected',
+        remoteNumber: activeCallInfo.remoteNumber,
+        direction: activeCallInfo.direction,
+        isOnHold: activeCallInfo.isOnHold
+      };
+    } else if (activeSession.isConnecting()) {
+      return { 
+        status: 'connecting',
+        remoteNumber: activeCallInfo.remoteNumber,
+        direction: activeCallInfo.direction
+      };
     } else {
       return { status: 'idle' };
     }

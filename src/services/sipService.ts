@@ -23,19 +23,28 @@ export interface CallState {
   errorMessage?: string;
   errorCode?: string;
   isOnHold?: boolean;
+  sessionId?: string;
+  activeCalls?: CallInfo[];
+}
+
+export interface CallInfo {
+  sessionId: string;
+  remoteNumber: string;
+  isOnHold: boolean;
+  direction: 'incoming' | 'outgoing';
+  startTime?: Date;
 }
 
 export class SipService {
   private userAgent?: UserAgent;
   private registerer?: Registerer;
-  private currentSession?: any;
+  private sessions: Map<string, any> = new Map(); // sessionId -> session
+  private callInfos: Map<string, CallInfo> = new Map(); // sessionId -> call info
+  private activeSessionId?: string; // Currently active session
   private config?: SipConfig;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
   private remoteAudio?: HTMLAudioElement;
-  private currentRemoteNumber?: string;
-  private currentCallDirection?: 'incoming' | 'outgoing';
-  private isCurrentCallOnHold: boolean = false;
   private dialToneAudio?: HTMLAudioElement;
   private ringtoneAudio?: HTMLAudioElement;
   private audioContext?: AudioContext;
@@ -49,6 +58,61 @@ export class SipService {
 
   setRegistrationStateCallback(callback: (registered: boolean) => void) {
     this.onRegistrationStateChanged = callback;
+  }
+
+  private generateSessionId(): string {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private getActiveSession(): any {
+    return this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+  }
+
+  private getActiveCallInfo(): CallInfo | undefined {
+    return this.activeSessionId ? this.callInfos.get(this.activeSessionId) : undefined;
+  }
+
+
+  private getCallInfosArray(): CallInfo[] {
+    return Array.from(this.callInfos.values());
+  }
+
+  private updateCallState(sessionId?: string, status?: CallState['status']) {
+    const activeCalls = this.getCallInfosArray();
+    
+    if (activeCalls.length === 0) {
+      this.onCallStateChanged?.({ 
+        status: 'idle',
+        activeCalls: []
+      });
+      return;
+    }
+
+    // If no specific session, use active session or first available
+    const targetSessionId = sessionId || this.activeSessionId || activeCalls[0].sessionId;
+    const callInfo = this.callInfos.get(targetSessionId);
+    const session = this.sessions.get(targetSessionId);
+
+    if (!callInfo || !session) return;
+
+    // Use provided status or determine from session state
+    let finalStatus: CallState['status'] = status || 'connected';
+    if (!status) {
+      if (session.state === SessionState.Initial || session.state === SessionState.Establishing) {
+        finalStatus = 'connecting';
+      } else if (session.state === SessionState.Terminated) {
+        finalStatus = 'idle';
+      }
+    }
+
+    this.onCallStateChanged?.({
+      status: finalStatus,
+      remoteNumber: callInfo.remoteNumber,
+      direction: callInfo.direction,
+      isOnHold: callInfo.isOnHold,
+      sessionId: targetSessionId,
+      activeCalls
+    });
   }
 
   async configure(config: SipConfig): Promise<void> {
@@ -265,7 +329,8 @@ export class SipService {
             console.log('Audio may require user interaction to start');
             
             // Try to inform about audio issues
-            if (this.onCallStateChanged && this.currentSession?.state === SessionState.Established) {
+            const activeSession = this.getActiveSession();
+            if (this.onCallStateChanged && activeSession?.state === SessionState.Established) {
               // Don't fail the call, but log the audio issue
               console.warn('Audio playback requires user interaction. User may need to click to enable audio.');
             }
@@ -423,15 +488,26 @@ export class SipService {
   }
 
   private handleIncomingCall(invitation: any) {
-    this.currentSession = invitation;
+    const sessionId = this.generateSessionId();
     const remoteUser = invitation.remoteIdentity?.uri?.user || 'Unknown';
-    this.currentCallDirection = 'incoming';
-    this.currentRemoteNumber = remoteUser;
+    
+    // Store session and call info
+    this.sessions.set(sessionId, invitation);
+    this.callInfos.set(sessionId, {
+      sessionId,
+      remoteNumber: remoteUser,
+      isOnHold: false,
+      direction: 'incoming',
+      startTime: new Date()
+    });
+    
+    // Set as active session
+    this.activeSessionId = sessionId;
     
     // Start ringtone for incoming call
     this.generateRingtone();
     
-    this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
+    this.updateCallState(sessionId, 'ringing');
 
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
@@ -439,17 +515,54 @@ export class SipService {
           this.stopRingbackTone(); // Stop ringback tone if any
           this.stopRingtone(); // Stop ringtone when call is answered
           this.setupAudioStreams(invitation);
-          this.onCallStateChanged?.({ status: 'connected', remoteUser, direction: 'incoming', isOnHold: false });
+          this.updateCallState(sessionId, 'connected');
           break;
         case SessionState.Terminated:
           this.cleanupAudioStreams();
-          this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
-          this.currentSession = undefined;
-          this.currentRemoteNumber = undefined;
-          this.currentCallDirection = undefined;
+          this.sessions.delete(sessionId);
+          this.callInfos.delete(sessionId);
+          if (this.activeSessionId === sessionId) {
+            this.activeSessionId = undefined;
+          }
+          this.updateCallState(sessionId, 'idle');
           break;
       }
     });
+  }
+
+  // Multi-call management methods
+  switchToCall(sessionId: string): boolean {
+    if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
+      this.activeSessionId = sessionId;
+      const callInfo = this.callInfos.get(sessionId)!;
+      this.updateCallState(sessionId, 'connected');
+      return true;
+    }
+    return false;
+  }
+
+  getAllActiveCalls(): CallInfo[] {
+    return Array.from(this.callInfos.values());
+  }
+
+  getCallInfo(sessionId: string): CallInfo | undefined {
+    return this.callInfos.get(sessionId);
+  }
+
+  async endCall(sessionId?: string): Promise<void> {
+    const targetSessionId = sessionId || this.activeSessionId;
+    if (!targetSessionId) return;
+    
+    const session = this.sessions.get(targetSessionId);
+    if (session) {
+      try {
+        await session.bye();
+      } catch (error) {
+        console.warn('Error ending call:', error);
+      }
+      
+      // Cleanup will be handled by the session state listener
+    }
   }
 
   async makeCall(number: string): Promise<void> {
@@ -466,41 +579,54 @@ export class SipService {
     try {
       const domain = this.config.domain || this.config.server;
       const target = new URI('sip', number, domain);
+      const sessionId = this.generateSessionId();
       
-      this.currentSession = new Inviter(this.userAgent, target);
+      const session = new Inviter(this.userAgent, target);
+      
+      // Store session and call info
+      this.sessions.set(sessionId, session);
+      this.callInfos.set(sessionId, {
+        sessionId,
+        remoteNumber: number,
+        isOnHold: false,
+        direction: 'outgoing',
+        startTime: new Date()
+      });
 
-      this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
+      // Set as active session
+      this.activeSessionId = sessionId;
 
       // Start ringback tone for outgoing call
       this.generateRingbackTone();
 
-      this.currentCallDirection = 'outgoing';
-      this.currentRemoteNumber = number;
+      // Update UI with connecting state
+      this.updateCallState(sessionId);
       
-      this.currentSession.stateChange.addListener((state: SessionState) => {
+      session.stateChange.addListener((state: SessionState) => {
         switch (state) {
           case SessionState.Establishing:
-            this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
+            this.updateCallState(sessionId, 'connecting');
             break;
           case SessionState.Established:
             this.stopRingbackTone(); // Stop ringback tone when call is connected
-            this.setupAudioStreams(this.currentSession);
-            this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing', isOnHold: false });
+            this.setupAudioStreams(session);
+            this.updateCallState(sessionId, 'connected');
             break;
           case SessionState.Terminated:
             this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
             this.cleanupAudioStreams();
-            this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
-            this.currentSession = undefined;
-            this.currentRemoteNumber = undefined;
-            this.currentCallDirection = undefined;
-            this.isCurrentCallOnHold = false;
+            this.sessions.delete(sessionId);
+            this.callInfos.delete(sessionId);
+            if (this.activeSessionId === sessionId) {
+              this.activeSessionId = undefined;
+            }
+            this.updateCallState(sessionId, 'idle');
             break;
         }
       });
 
-      await this.currentSession.invite();
+      await session.invite();
     } catch (error: any) {
       let errorMessage = 'Failed to make call.';
       let errorCode = 'CALL_FAILED';
@@ -527,18 +653,18 @@ export class SipService {
       
       this.onCallStateChanged?.({ 
         status: 'failed', 
-        remoteNumber: this.currentRemoteNumber,
+        remoteNumber: number,
         errorMessage,
         errorCode
       });
-      this.currentRemoteNumber = undefined;
       console.error('Failed to make call:', error);
       throw new Error(errorMessage);
     }
   }
 
   async answerCall(): Promise<void> {
-    if (this.currentSession && this.currentSession.accept) {
+    const activeSession = this.getActiveSession();
+    if (activeSession && activeSession.accept) {
       try {
         // Stop any audio feedback when answering
         this.stopRingbackTone();
@@ -546,7 +672,7 @@ export class SipService {
         
         // Try immediate accept first, only wait if it fails
         try {
-          await this.currentSession.accept();
+          await activeSession.accept();
           return; // Success, exit early
         } catch (immediateError: any) {
           if (!immediateError.message?.includes('Invalid session state')) {
@@ -556,26 +682,26 @@ export class SipService {
         }
         
         // If immediate accept failed due to state, wait a bit
-        if (this.currentSession.state === SessionState.Establishing) {
+        if (activeSession.state === SessionState.Establishing) {
           console.log('Session is establishing, waiting briefly...');
           
           // Much shorter wait with linear progression
           let attempts = 0;
           const maxAttempts = 3; // Further reduced
           
-          while (this.currentSession.state === SessionState.Establishing && attempts < maxAttempts) {
+          while (activeSession.state === SessionState.Establishing && attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
             attempts++;
-            console.log(`Attempt ${attempts}: Session state is ${this.currentSession.state}`);
+            console.log(`Attempt ${attempts}: Session state is ${activeSession.state}`);
             
             // Check if session was terminated while waiting
-            if (this.currentSession.state === SessionState.Terminated) {
+            if (activeSession.state === SessionState.Terminated) {
               throw new Error('Call was terminated before it could be answered');
             }
             
             // Try accepting after each wait
             try {
-              await this.currentSession.accept();
+              await activeSession.accept();
               return; // Success, exit
             } catch (retryError: any) {
               if (attempts === maxAttempts || !retryError.message?.includes('Invalid session state')) {
@@ -587,7 +713,7 @@ export class SipService {
         }
         
         // Final attempt
-        await this.currentSession.accept();
+        await activeSession.accept();
       } catch (error: any) {
         console.error('Failed to answer call:', error);
         
@@ -608,9 +734,10 @@ export class SipService {
           errorCode = 'MEDIA_ERROR';
         }
         
+        const activeCallInfo = this.getActiveCallInfo();
         this.onCallStateChanged?.({ 
           status: 'failed',
-          remoteNumber: this.currentRemoteNumber,
+          remoteNumber: activeCallInfo?.remoteNumber,
           errorMessage,
           errorCode
         });
@@ -621,23 +748,24 @@ export class SipService {
   }
 
   async hangup(): Promise<void> {
-    if (this.currentSession) {
+    const activeSession = this.getActiveSession();
+    if (activeSession) {
       try {
-        switch (this.currentSession.state) {
+        switch (activeSession.state) {
           case SessionState.Initial:
           case SessionState.Establishing:
-            if (this.currentSession.cancel) {
-              await this.currentSession.cancel();
+            if (activeSession.cancel) {
+              await activeSession.cancel();
             }
             break;
           case SessionState.Established:
-            if (this.currentSession.bye) {
-              await this.currentSession.bye();
+            if (activeSession.bye) {
+              await activeSession.bye();
             }
             break;
           default:
-            if (this.currentSession.terminate) {
-              await this.currentSession.terminate();
+            if (activeSession.terminate) {
+              await activeSession.terminate();
             }
             break;
         }
@@ -649,11 +777,14 @@ export class SipService {
   }
 
   async holdCall(): Promise<void> {
-    if (this.currentSession && this.currentSession.state === SessionState.Established) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (activeSession && activeSession.state === SessionState.Established && activeCallInfo) {
       try {
-        if (!this.isCurrentCallOnHold) {
+        if (!activeCallInfo.isOnHold) {
           // Mute the microphone to simulate hold
-          const pc = this.currentSession.sessionDescriptionHandler?.peerConnection;
+          const pc = activeSession.sessionDescriptionHandler?.peerConnection;
           if (pc) {
             const senders = pc.getSenders();
             senders.forEach((sender: RTCRtpSender) => {
@@ -663,13 +794,10 @@ export class SipService {
             });
           }
           
-          this.isCurrentCallOnHold = true;
-          this.onCallStateChanged?.({ 
-            status: 'connected', 
-            remoteNumber: this.currentRemoteNumber, 
-            direction: this.currentCallDirection,
-            isOnHold: true
-          });
+          // Update call info
+          activeCallInfo.isOnHold = true;
+          this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
           
           console.log('Call placed on hold');
         }
@@ -683,11 +811,14 @@ export class SipService {
   }
 
   async unholdCall(): Promise<void> {
-    if (this.currentSession && this.currentSession.state === SessionState.Established) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (activeSession && activeSession.state === SessionState.Established && activeCallInfo) {
       try {
-        if (this.isCurrentCallOnHold) {
+        if (activeCallInfo.isOnHold) {
           // Unmute the microphone to resume call
-          const pc = this.currentSession.sessionDescriptionHandler?.peerConnection;
+          const pc = activeSession.sessionDescriptionHandler?.peerConnection;
           if (pc) {
             const senders = pc.getSenders();
             senders.forEach((sender: RTCRtpSender) => {
@@ -697,13 +828,10 @@ export class SipService {
             });
           }
           
-          this.isCurrentCallOnHold = false;
-          this.onCallStateChanged?.({ 
-            status: 'connected', 
-            remoteNumber: this.currentRemoteNumber, 
-            direction: this.currentCallDirection,
-            isOnHold: false
-          });
+          // Update call info
+          activeCallInfo.isOnHold = false;
+          this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
           
           console.log('Call resumed from hold');
         }
@@ -718,7 +846,8 @@ export class SipService {
 
   async disconnect(): Promise<void> {
     try {
-      if (this.currentSession) {
+      const activeSession = this.getActiveSession();
+      if (activeSession) {
         await this.hangup();
       }
       if (this.registerer) {
@@ -748,8 +877,11 @@ export class SipService {
     } finally {
       this.userAgent = undefined;
       this.registerer = undefined;
-      this.currentSession = undefined;
-      this.isCurrentCallOnHold = false;
+      
+      // Clear all sessions and call info
+      this.sessions.clear();
+      this.callInfos.clear();
+      this.activeSessionId = undefined;
     }
   }
 
@@ -758,16 +890,28 @@ export class SipService {
   }
 
   getCurrentCallState(): CallState {
-    if (!this.currentSession) {
+    const activeSession = this.getActiveSession();
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (!activeSession || !activeCallInfo) {
       return { status: 'idle' };
     }
     
-    switch (this.currentSession.state) {
+    switch (activeSession.state) {
       case SessionState.Initial:
       case SessionState.Establishing:
-        return { status: 'connecting' };
+        return { 
+          status: 'connecting',
+          remoteNumber: activeCallInfo.remoteNumber,
+          direction: activeCallInfo.direction
+        };
       case SessionState.Established:
-        return { status: 'connected' };
+        return { 
+          status: 'connected',
+          remoteNumber: activeCallInfo.remoteNumber,
+          direction: activeCallInfo.direction,
+          isOnHold: activeCallInfo.isOnHold
+        };
       default:
         return { status: 'idle' };
     }

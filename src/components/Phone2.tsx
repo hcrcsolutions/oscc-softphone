@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay } from 'react-icons/tb';
-import { SipML5Service, CallState, SipML5Config } from '@/services/sipml5Service';
+import { SipML5Service, CallState, SipML5Config, CallInfo } from '@/services/sipml5Service';
 
 interface Phone2Props {
   theme: string;
@@ -11,6 +11,7 @@ interface Phone2Props {
 export default function Phone2({ theme }: Phone2Props) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
+  const [activeCalls, setActiveCalls] = useState<CallInfo[]>([]);
   const [isRegistered, setIsRegistered] = useState(false);
   const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming' | 'failed', duration?: string}>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
@@ -28,6 +29,9 @@ export default function Phone2({ theme }: Phone2Props) {
     
     service.setCallStateCallback((state: CallState) => {
       setCallState(state);
+      
+      // Update active calls list
+      setActiveCalls(service.getAllActiveCalls());
       
       // Track call start time when connected
       if (state.status === 'connected' && !callStartTime.current) {
@@ -349,6 +353,63 @@ export default function Phone2({ theme }: Phone2Props) {
           </div>
         </div>
       </div>
+      
+      {/* Multi-call management panel */}
+      {activeCalls.length > 0 && (
+        <div className="card bg-base-100 shadow-xl max-w-2xl mx-auto mb-6">
+          <div className="card-body">
+            <h3 className="card-title mb-4">Active Calls ({activeCalls.length})</h3>
+            <div className="space-y-2">
+              {activeCalls.map((call) => (
+                <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <div className={`w-3 h-3 rounded-full ${call.isOnHold ? 'bg-warning' : 'bg-success'}`}></div>
+                    <div>
+                      <div className="font-semibold">{call.remoteNumber}</div>
+                      <div className="text-sm opacity-70">
+                        {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    {call.isOnHold ? (
+                      <button
+                        onClick={() => sipService.current.unholdCall()}
+                        className="btn btn-sm btn-success"
+                        title="Resume call"
+                      >
+                        <TbPlayerPlay className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => sipService.current.holdCall()}
+                        className="btn btn-sm btn-warning"
+                        title="Hold call"
+                      >
+                        <TbPlayerPause className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => sipService.current.switchToCall(call.sessionId)}
+                      className="btn btn-sm btn-primary"
+                      title="Switch to this call"
+                    >
+                      Switch
+                    </button>
+                    <button
+                      onClick={() => sipService.current.endCall(call.sessionId)}
+                      className="btn btn-sm btn-error"
+                      title="End call"
+                    >
+                      <TbPhoneOff className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       
         <div className="card bg-base-100 shadow-xl max-w-md mx-auto">
           <div className="card-body">
