@@ -39,7 +39,8 @@ export class SipService {
   private dialToneAudio?: HTMLAudioElement;
   private ringtoneAudio?: HTMLAudioElement;
   private audioContext?: AudioContext;
-  private dialToneOscillators: OscillatorNode[] = [];
+  private ringbackOscillators: OscillatorNode[] = [];
+  private ringbackInterval?: NodeJS.Timeout;
   private ringtoneInterval?: NodeJS.Timeout;
 
   setCallStateCallback(callback: (state: CallState) => void) {
@@ -83,43 +84,72 @@ export class SipService {
     }
   }
 
-  private generateDialTone() {
+  private generateRingbackTone() {
     try {
       this.setupAudioContext();
       if (!this.audioContext) return;
 
-      // Stop any existing dial tone
-      this.stopDialTone();
+      // Stop any existing ringback tone
+      this.stopRingbackTone();
 
-      // Create dual-frequency dial tone (350Hz + 440Hz)
-      const oscillator1 = this.audioContext.createOscillator();
-      const oscillator2 = this.audioContext.createOscillator();
-      const gainNode = this.audioContext.createGain();
+      // Create ringback tone pattern (440Hz + 480Hz, 2s on, 4s off)
+      const playRingback = () => {
+        if (!this.audioContext) return;
+        
+        const oscillator1 = this.audioContext.createOscillator();
+        const oscillator2 = this.audioContext.createOscillator();
+        const gainNode = this.audioContext.createGain();
 
-      oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
-      oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
-      
-      gainNode.gain.setValueAtTime(0.1, this.audioContext.currentTime); // Lower volume
+        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
+        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        
+        gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime); // Moderate volume
 
-      oscillator1.connect(gainNode);
-      oscillator2.connect(gainNode);
-      gainNode.connect(this.audioContext.destination);
+        oscillator1.connect(gainNode);
+        oscillator2.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
 
-      oscillator1.start();
-      oscillator2.start();
+        oscillator1.start();
+        oscillator2.start();
 
-      // Store both oscillators to stop later
-      this.dialToneOscillators = [oscillator1, oscillator2];
+        // Store oscillators for this ring cycle
+        this.ringbackOscillators.push(oscillator1, oscillator2);
 
-      console.log('Dial tone started');
+        // Stop after 2 seconds
+        setTimeout(() => {
+          try {
+            oscillator1.stop();
+            oscillator2.stop();
+            // Remove from array
+            const index1 = this.ringbackOscillators.indexOf(oscillator1);
+            const index2 = this.ringbackOscillators.indexOf(oscillator2);
+            if (index1 > -1) this.ringbackOscillators.splice(index1, 1);
+            if (index2 > -1) this.ringbackOscillators.splice(index2, 1);
+          } catch (error) {
+            // Already stopped
+          }
+        }, 2000);
+      };
+
+      // Play initial ringback
+      playRingback();
+
+      // Set up interval for repeated ringback (every 6 seconds: 2s ring + 4s silence)
+      this.ringbackInterval = setInterval(playRingback, 6000);
+
+      console.log('Ringback tone started');
     } catch (error) {
-      console.error('Failed to generate dial tone:', error);
+      console.error('Failed to generate ringback tone:', error);
     }
   }
 
-  private stopDialTone() {
-    if (this.dialToneOscillators.length > 0) {
-      this.dialToneOscillators.forEach(oscillator => {
+  private stopRingbackTone() {
+    if (this.ringbackInterval) {
+      clearInterval(this.ringbackInterval);
+      this.ringbackInterval = undefined;
+    }
+    if (this.ringbackOscillators.length > 0) {
+      this.ringbackOscillators.forEach(oscillator => {
         try {
           oscillator.stop();
           oscillator.disconnect();
@@ -127,8 +157,8 @@ export class SipService {
           // Oscillator might already be stopped
         }
       });
-      this.dialToneOscillators = [];
-      console.log('Dial tone stopped');
+      this.ringbackOscillators = [];
+      console.log('Ringback tone stopped');
     }
   }
 
@@ -406,10 +436,10 @@ export class SipService {
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
         case SessionState.Established:
-          this.stopDialTone(); // Stop dial tone if any
+          this.stopRingbackTone(); // Stop ringback tone if any
           this.stopRingtone(); // Stop ringtone when call is answered
           this.setupAudioStreams(invitation);
-          this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming', isOnHold: false });
+          this.onCallStateChanged?.({ status: 'connected', remoteUser, direction: 'incoming', isOnHold: false });
           break;
         case SessionState.Terminated:
           this.cleanupAudioStreams();
@@ -441,8 +471,8 @@ export class SipService {
 
       this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
 
-      // Start dial tone for outgoing call
-      this.generateDialTone();
+      // Start ringback tone for outgoing call
+      this.generateRingbackTone();
 
       this.currentCallDirection = 'outgoing';
       this.currentRemoteNumber = number;
@@ -453,12 +483,12 @@ export class SipService {
             this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
             break;
           case SessionState.Established:
-            this.stopDialTone(); // Stop dial tone when call is connected
+            this.stopRingbackTone(); // Stop ringback tone when call is connected
             this.setupAudioStreams(this.currentSession);
             this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing', isOnHold: false });
             break;
           case SessionState.Terminated:
-            this.stopDialTone(); // Stop any audio feedback
+            this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
             this.cleanupAudioStreams();
             this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
@@ -511,7 +541,7 @@ export class SipService {
     if (this.currentSession && this.currentSession.accept) {
       try {
         // Stop any audio feedback when answering
-        this.stopDialTone();
+        this.stopRingbackTone();
         this.stopRingtone();
         
         // Try immediate accept first, only wait if it fails
@@ -699,7 +729,7 @@ export class SipService {
       }
       
       // Cleanup all audio
-      this.stopDialTone();
+      this.stopRingbackTone();
       this.stopRingtone();
       this.cleanupAudioStreams();
       
