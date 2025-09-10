@@ -11,6 +11,8 @@ export interface CallState {
   remoteNumber?: string;
   duration?: number;
   direction?: 'incoming' | 'outgoing';
+  errorMessage?: string;
+  errorCode?: string;
 }
 
 // Declare global SIPml for TypeScript
@@ -123,15 +125,35 @@ export class SipML5Service {
       
       await this.disconnect();
       await this.connect();
-    } catch (error) {
+    } catch (error: any) {
       console.error('SipML5: Configuration failed:', error);
-      throw new Error(`SipML5 configuration failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      
+      let errorMessage = 'Failed to configure phone system.';
+      if (error.message?.includes('WebSocket') || error.message?.includes('ws')) {
+        errorMessage = 'Cannot connect to phone server. Please check your network connection.';
+      } else if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
+        errorMessage = 'Invalid phone credentials. Please check your username and password.';
+      }
+      
+      this.onCallStateChanged?.({
+        status: 'failed',
+        errorMessage,
+        errorCode: 'CONFIG_FAILED'
+      });
+      
+      throw new Error(errorMessage);
     }
   }
 
   private async connect(): Promise<void> {
     if (!this.config || !this.isInitialized) {
-      throw new Error('SipML5 not initialized or configured');
+      const errorMessage = 'Phone system not initialized or configured. Please check your settings.';
+      this.onCallStateChanged?.({
+        status: 'failed',
+        errorMessage,
+        errorCode: 'NOT_INITIALIZED'
+      });
+      throw new Error(errorMessage);
     }
 
     try {
@@ -301,7 +323,34 @@ export class SipML5Service {
         break;
         
       case 'failed':
-        this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
+        console.error('SipML5: Call failed');
+        
+        let failErrorMessage = 'Call failed.';
+        let failErrorCode = 'CALL_FAILED';
+        const failError = session.getLastError?.();
+        
+        if (failError === 486) {
+          failErrorMessage = 'The number is busy. Please try again later.';
+          failErrorCode = 'BUSY';
+        } else if (failError === 404) {
+          failErrorMessage = 'Invalid number or extension not found.';
+          failErrorCode = 'NOT_FOUND';
+        } else if (failError === 503) {
+          failErrorMessage = 'Phone service temporarily unavailable. Please try again later.';
+          failErrorCode = 'SERVICE_UNAVAILABLE';
+        } else if (failError === 408) {
+          failErrorMessage = 'Call timeout. The number may be unreachable.';
+          failErrorCode = 'TIMEOUT';
+        }
+        
+        this.onCallStateChanged?.({
+          status: 'failed',
+          remoteNumber: this.currentRemoteNumber,
+          direction: this.currentCallDirection,
+          errorMessage: failErrorMessage,
+          errorCode: failErrorCode
+        });
+        
         this.currentRemoteNumber = undefined;
         this.currentCallDirection = undefined;
         this.callSession = null;
@@ -312,11 +361,23 @@ export class SipML5Service {
 
   async makeCall(number: string): Promise<void> {
     if (!this.sipStack || !this.config) {
-      throw new Error('SipML5 service not configured');
+      const errorMessage = 'Phone system not ready. Please wait for registration to complete.';
+      this.onCallStateChanged?.({
+        status: 'failed',
+        errorMessage,
+        errorCode: 'NOT_REGISTERED'
+      });
+      throw new Error(errorMessage);
     }
     
     if (!this.isStackStarted) {
-      throw new Error('SipML5 stack not started yet');
+      const errorMessage = 'Phone system not ready. Please wait for initialization to complete.';
+      this.onCallStateChanged?.({
+        status: 'failed',
+        errorMessage,
+        errorCode: 'NOT_STARTED'
+      });
+      throw new Error(errorMessage);
     }
 
     try {
@@ -346,12 +407,42 @@ export class SipML5Service {
       
       const result = this.callSession.call(target);
       if (result !== 0) {
-        throw new Error(`Failed to make call: ${result}`);
+        let errorMessage = 'Failed to make call.';
+        let errorCode = 'CALL_FAILED';
+        
+        if (result === -1) {
+          errorMessage = 'Invalid call parameters. Please check the number and try again.';
+          errorCode = 'INVALID_PARAMS';
+        } else if (result === -2) {
+          errorMessage = 'Phone system not ready. Please try again.';
+          errorCode = 'NOT_READY';
+        }
+        
+        this.onCallStateChanged?.({
+          status: 'failed',
+          remoteNumber: number,
+          errorMessage,
+          errorCode
+        });
+        
+        throw new Error(errorMessage);
       }
       
-    } catch (error) {
-      this.onCallStateChanged?.({ status: 'failed' });
+    } catch (error: any) {
       console.error('SipML5: Failed to make call:', error);
+      
+      // If we haven't already set an error message, set a generic one
+      if (!error.message?.includes('Phone') && !error.message?.includes('Failed to make call')) {
+        const errorMessage = error.message || 'Failed to make call. Please try again.';
+        this.onCallStateChanged?.({
+          status: 'failed',
+          remoteNumber: number,
+          errorMessage,
+          errorCode: 'CALL_FAILED'
+        });
+        throw new Error(errorMessage);
+      }
+      
       throw error;
     }
   }
@@ -373,12 +464,44 @@ export class SipML5Service {
         });
         
         if (result !== 0) {
-          throw new Error(`Failed to answer call: ${result}`);
+          let errorMessage = 'Failed to answer call.';
+          let errorCode = 'ANSWER_FAILED';
+          
+          if (result === -1) {
+            errorMessage = 'Invalid call state. Cannot answer at this time.';
+            errorCode = 'INVALID_STATE';
+          } else if (result === -2) {
+            errorMessage = 'Phone system error. Please try again.';
+            errorCode = 'SYSTEM_ERROR';
+          }
+          
+          this.onCallStateChanged?.({
+            status: 'failed',
+            remoteNumber: this.currentRemoteNumber,
+            errorMessage,
+            errorCode
+          });
+          
+          throw new Error(errorMessage);
         }
         
         console.log('SipML5: Call answered');
-      } catch (error) {
+      } catch (error: any) {
         console.error('SipML5: Failed to answer call:', error);
+        
+        // If we haven't already set an error message
+        if (!error.message?.includes('Failed to answer')) {
+          const errorMessage = 'Failed to answer call. Please check your microphone settings.';
+          this.onCallStateChanged?.({
+            status: 'failed',
+            remoteNumber: this.currentRemoteNumber,
+            errorMessage,
+            errorCode: 'ANSWER_FAILED'
+          });
+          throw new Error(errorMessage);
+        }
+        
+        throw error;
       }
     }
   }
@@ -421,8 +544,9 @@ export class SipML5Service {
       
       this.cleanupAudio();
       console.log('SipML5: Disconnected');
-    } catch (error) {
+    } catch (error: any) {
       console.error('SipML5: Failed to disconnect:', error);
+      // Don't throw here, just log - disconnect should always succeed from user perspective
     }
   }
 

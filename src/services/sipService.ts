@@ -20,6 +20,8 @@ export interface CallState {
   remoteNumber?: string;
   duration?: number;
   direction?: 'incoming' | 'outgoing';
+  errorMessage?: string;
+  errorCode?: string;
 }
 
 export class SipService {
@@ -111,6 +113,12 @@ export class SipService {
             console.error('Failed to start audio playback:', error);
             // On error, we might need user interaction
             console.log('Audio may require user interaction to start');
+            
+            // Try to inform about audio issues
+            if (this.onCallStateChanged && this.currentSession?.state === SessionState.Established) {
+              // Don't fail the call, but log the audio issue
+              console.warn('Audio playback requires user interaction. User may need to click to enable audio.');
+            }
           });
         }
       };
@@ -131,6 +139,7 @@ export class SipService {
             console.log('✓ Remote audio playback started from existing track');
           }).catch((error) => {
             console.error('Failed to start audio from existing track:', error);
+            console.warn('Audio playback requires user interaction. User may need to click to enable audio.');
           });
         }
       });
@@ -149,7 +158,13 @@ export class SipService {
 
   private async connect(): Promise<void> {
     if (!this.config) {
-      throw new Error('SIP configuration not set');
+      const error = new Error('SIP configuration not set');
+      this.onCallStateChanged?.({ 
+        status: 'failed', 
+        errorMessage: 'Phone system not configured. Please check your settings.',
+        errorCode: 'CONFIG_MISSING'
+      });
+      throw error;
     }
 
     try {
@@ -226,9 +241,30 @@ export class SipService {
       });
 
       await this.registerer.register();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to connect to SIP server:', error);
       this.onRegistrationStateChanged?.(false);
+      
+      let errorMessage = 'Failed to connect to phone system.';
+      let errorCode = 'CONNECTION_FAILED';
+      
+      if (error.message?.includes('WebSocket')) {
+        errorMessage = 'Cannot connect to phone server. Please check your network connection.';
+        errorCode = 'WEBSOCKET_ERROR';
+      } else if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
+        errorMessage = 'Invalid phone credentials. Please check your username and password.';
+        errorCode = 'AUTH_FAILED';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage = 'Connection timeout. The phone server may be unavailable.';
+        errorCode = 'TIMEOUT';
+      }
+      
+      this.onCallStateChanged?.({ 
+        status: 'failed', 
+        errorMessage,
+        errorCode
+      });
+      
       throw error;
     }
   }
@@ -260,7 +296,13 @@ export class SipService {
 
   async makeCall(number: string): Promise<void> {
     if (!this.userAgent || !this.config) {
-      throw new Error('SIP service not configured');
+      const errorMessage = 'Phone system not ready. Please wait for registration to complete.';
+      this.onCallStateChanged?.({ 
+        status: 'failed', 
+        errorMessage,
+        errorCode: 'NOT_REGISTERED'
+      });
+      throw new Error(errorMessage);
     }
 
     try {
@@ -294,11 +336,36 @@ export class SipService {
       });
 
       await this.currentSession.invite();
-    } catch (error) {
-      this.onCallStateChanged?.({ status: 'failed', remoteNumber: this.currentRemoteNumber });
+    } catch (error: any) {
+      let errorMessage = 'Failed to make call.';
+      let errorCode = 'CALL_FAILED';
+      
+      if (error.message?.includes('486') || error.message?.includes('Busy')) {
+        errorMessage = 'The number is busy. Please try again later.';
+        errorCode = 'BUSY';
+      } else if (error.message?.includes('404') || error.message?.includes('Not Found')) {
+        errorMessage = 'Invalid number or extension not found.';
+        errorCode = 'NOT_FOUND';
+      } else if (error.message?.includes('503') || error.message?.includes('Service Unavailable')) {
+        errorMessage = 'Phone service temporarily unavailable. Please try again later.';
+        errorCode = 'SERVICE_UNAVAILABLE';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage = 'Call timeout. The number may be unreachable.';
+        errorCode = 'TIMEOUT';
+      } else if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
+        errorMessage = 'Microphone access denied or not available.';
+        errorCode = 'MEDIA_ERROR';
+      }
+      
+      this.onCallStateChanged?.({ 
+        status: 'failed', 
+        remoteNumber: this.currentRemoteNumber,
+        errorMessage,
+        errorCode
+      });
       this.currentRemoteNumber = undefined;
       console.error('Failed to make call:', error);
-      throw error;
+      throw new Error(errorMessage);
     }
   }
 
@@ -306,8 +373,25 @@ export class SipService {
     if (this.currentSession && this.currentSession.accept) {
       try {
         await this.currentSession.accept();
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to answer call:', error);
+        
+        let errorMessage = 'Failed to answer call.';
+        let errorCode = 'ANSWER_FAILED';
+        
+        if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
+          errorMessage = 'Microphone access denied or not available.';
+          errorCode = 'MEDIA_ERROR';
+        }
+        
+        this.onCallStateChanged?.({ 
+          status: 'failed',
+          remoteNumber: this.currentRemoteNumber,
+          errorMessage,
+          errorCode
+        });
+        
+        throw new Error(errorMessage);
       }
     }
   }
@@ -333,8 +417,9 @@ export class SipService {
             }
             break;
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error('Failed to hangup:', error);
+        // Don't throw here, just log - hangup should always succeed from user perspective
       }
     }
   }

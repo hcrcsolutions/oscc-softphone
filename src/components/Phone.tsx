@@ -16,6 +16,8 @@ export default function Phone({ theme }: PhoneProps) {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [extension, setExtension] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showErrorAlert, setShowErrorAlert] = useState(false);
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const sipService = useRef<SipService>(new SipService());
@@ -76,6 +78,10 @@ export default function Phone({ theme }: PhoneProps) {
           timerInterval.current = null;
         }
         setCallDuration(0);
+        
+        // Show error alert
+        const errorMsg = state.errorMessage || 'Call failed. Please check your connection and try again.';
+        showError(errorMsg);
       }
       
       // Clear timer when call ends normally
@@ -96,7 +102,10 @@ export default function Phone({ theme }: PhoneProps) {
       try {
         const config: SipConfig = JSON.parse(savedConfig);
         setExtension(config.username);
-        service.configure(config).catch(console.error);
+        service.configure(config).catch((error) => {
+          console.error('Failed to configure SIP:', error);
+          showError('Failed to connect to phone system. Please check your settings.');
+        });
       } catch (error) {
         console.error('Failed to load SIP configuration:', error);
       }
@@ -111,6 +120,15 @@ export default function Phone({ theme }: PhoneProps) {
     };
   }, []);
 
+  const showError = (message: string) => {
+    setErrorMessage(message);
+    setShowErrorAlert(true);
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      setShowErrorAlert(false);
+    }, 5000);
+  };
+
   const handleDigitClick = (digit: string | number) => {
     setPhoneNumber(prev => prev + digit);
   };
@@ -123,25 +141,67 @@ export default function Phone({ theme }: PhoneProps) {
     if (!phoneNumber.trim()) return;
     
     try {
+      // Check for microphone permissions first
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (permError: any) {
+          console.error('Microphone permission error:', permError);
+          if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
+            showError('Microphone access denied. Please allow microphone access to make calls.');
+            return;
+          } else if (permError.name === 'NotFoundError') {
+            showError('No microphone found. Please connect a microphone to make calls.');
+            return;
+          } else {
+            showError('Failed to access microphone. Please check your audio settings.');
+            return;
+          }
+        }
+      }
+      
       await sipService.current.makeCall(phoneNumber);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to make call:', error);
+      const errorMsg = error.message || 'Failed to make call. Please try again.';
+      showError(errorMsg);
     }
   };
 
   const handleHangup = async () => {
     try {
       await sipService.current.hangup();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to hangup:', error);
+      showError('Failed to end call. Please try again.');
     }
   };
 
   const handleAnswer = async () => {
     try {
+      // Check for microphone permissions first
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (permError: any) {
+          console.error('Microphone permission error:', permError);
+          if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
+            showError('Microphone access denied. Please allow microphone access to answer calls.');
+            return;
+          } else if (permError.name === 'NotFoundError') {
+            showError('No microphone found. Please connect a microphone to answer calls.');
+            return;
+          } else {
+            showError('Failed to access microphone. Please check your audio settings.');
+            return;
+          }
+        }
+      }
+      
       await sipService.current.answerCall();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to answer call:', error);
+      showError('Failed to answer call. Please try again.');
     }
   };
 
@@ -193,6 +253,22 @@ export default function Phone({ theme }: PhoneProps) {
 
   return (
     <div className="p-8">
+      {/* Error Alert */}
+      {showErrorAlert && errorMessage && (
+        <div className="alert alert-error mb-4 max-w-2xl mx-auto">
+          <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>{errorMessage}</span>
+          <button 
+            onClick={() => setShowErrorAlert(false)}
+            className="btn btn-sm btn-ghost"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
         <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>

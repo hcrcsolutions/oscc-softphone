@@ -17,6 +17,8 @@ export default function Phone2({ theme }: Phone2Props) {
   const [isLoading, setIsLoading] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
   const [extension, setExtension] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showErrorAlert, setShowErrorAlert] = useState(false);
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const sipService = useRef<SipML5Service>(new SipML5Service());
@@ -40,6 +42,20 @@ export default function Phone2({ theme }: Phone2Props) {
             setCallDuration(elapsed);
           }
         }, 1000);
+      }
+      
+      // Handle failed calls
+      if (state.status === 'failed') {
+        callStartTime.current = null;
+        if (timerInterval.current) {
+          clearInterval(timerInterval.current);
+          timerInterval.current = null;
+        }
+        setCallDuration(0);
+        
+        // Show error alert
+        const errorMsg = state.errorMessage || 'Call failed. Please check your connection and try again.';
+        showError(errorMsg);
       }
       
       // Add to call history when call ends
@@ -135,29 +151,80 @@ export default function Phone2({ theme }: Phone2Props) {
     setPhoneNumber('');
   };
 
+  const showError = (message: string) => {
+    setErrorMessage(message);
+    setShowErrorAlert(true);
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      setShowErrorAlert(false);
+    }, 5000);
+  };
+
   const handleCall = async () => {
     if (!phoneNumber.trim()) return;
     
     try {
+      // Check for microphone permissions first
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (permError: any) {
+          console.error('Microphone permission error:', permError);
+          if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
+            showError('Microphone access denied. Please allow microphone access to make calls.');
+            return;
+          } else if (permError.name === 'NotFoundError') {
+            showError('No microphone found. Please connect a microphone to make calls.');
+            return;
+          } else {
+            showError('Failed to access microphone. Please check your audio settings.');
+            return;
+          }
+        }
+      }
+      
       await sipService.current.makeCall(phoneNumber);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to make call:', error);
+      const errorMsg = error.message || 'Failed to make call. Please try again.';
+      showError(errorMsg);
     }
   };
 
   const handleHangup = async () => {
     try {
       await sipService.current.hangup();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to hangup:', error);
+      showError('Failed to end call. Please try again.');
     }
   };
 
   const handleAnswer = async () => {
     try {
+      // Check for microphone permissions first
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (permError: any) {
+          console.error('Microphone permission error:', permError);
+          if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
+            showError('Microphone access denied. Please allow microphone access to answer calls.');
+            return;
+          } else if (permError.name === 'NotFoundError') {
+            showError('No microphone found. Please connect a microphone to answer calls.');
+            return;
+          } else {
+            showError('Failed to access microphone. Please check your audio settings.');
+            return;
+          }
+        }
+      }
+      
       await sipService.current.answerCall();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to answer call:', error);
+      showError('Failed to answer call. Please try again.');
     }
   };
 
@@ -211,6 +278,22 @@ export default function Phone2({ theme }: Phone2Props) {
 
   return (
     <div className="p-8">
+      {/* Error Alert */}
+      {showErrorAlert && errorMessage && (
+        <div className="alert alert-error mb-4 max-w-2xl mx-auto">
+          <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>{errorMessage}</span>
+          <button 
+            onClick={() => setShowErrorAlert(false)}
+            className="btn btn-sm btn-ghost"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
         <h2 className="text-3xl font-bold">Phone (SipML5){extension ? ` - ${extension}` : ''}</h2>
