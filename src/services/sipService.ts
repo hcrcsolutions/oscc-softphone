@@ -39,7 +39,7 @@ export class SipService {
   private dialToneAudio?: HTMLAudioElement;
   private ringtoneAudio?: HTMLAudioElement;
   private audioContext?: AudioContext;
-  private dialToneOscillator?: OscillatorNode;
+  private dialToneOscillators: OscillatorNode[] = [];
   private ringtoneInterval?: NodeJS.Timeout;
 
   setCallStateCallback(callback: (state: CallState) => void) {
@@ -108,8 +108,8 @@ export class SipService {
       oscillator1.start();
       oscillator2.start();
 
-      // Store reference to stop later
-      this.dialToneOscillator = oscillator1; // Store one for reference
+      // Store both oscillators to stop later
+      this.dialToneOscillators = [oscillator1, oscillator2];
 
       console.log('Dial tone started');
     } catch (error) {
@@ -118,14 +118,17 @@ export class SipService {
   }
 
   private stopDialTone() {
-    if (this.dialToneOscillator) {
-      try {
-        this.dialToneOscillator.stop();
-        this.dialToneOscillator.disconnect();
-      } catch (error) {
-        // Oscillator might already be stopped
-      }
-      this.dialToneOscillator = undefined;
+    if (this.dialToneOscillators.length > 0) {
+      this.dialToneOscillators.forEach(oscillator => {
+        try {
+          oscillator.stop();
+          oscillator.disconnect();
+        } catch (error) {
+          // Oscillator might already be stopped
+        }
+      });
+      this.dialToneOscillators = [];
+      console.log('Dial tone stopped');
     }
   }
 
@@ -403,6 +406,7 @@ export class SipService {
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
         case SessionState.Established:
+          this.stopDialTone(); // Stop dial tone if any
           this.stopRingtone(); // Stop ringtone when call is answered
           this.setupAudioStreams(invitation);
           this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming', isOnHold: false });
@@ -506,6 +510,10 @@ export class SipService {
   async answerCall(): Promise<void> {
     if (this.currentSession && this.currentSession.accept) {
       try {
+        // Stop any audio feedback when answering
+        this.stopDialTone();
+        this.stopRingtone();
+        
         // Try immediate accept first, only wait if it fails
         try {
           await this.currentSession.accept();

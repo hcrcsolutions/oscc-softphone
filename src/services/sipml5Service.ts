@@ -38,7 +38,7 @@ export class SipML5Service {
   private loadPromise?: Promise<void>;
   private isCurrentCallOnHold: boolean = false;
   private audioContext?: AudioContext;
-  private dialToneOscillator?: OscillatorNode;
+  private dialToneOscillators: OscillatorNode[] = [];
   private ringtoneInterval?: NodeJS.Timeout;
 
   constructor() {
@@ -76,8 +76,8 @@ export class SipML5Service {
       oscillator1.start();
       oscillator2.start();
 
-      // Store reference to stop later
-      this.dialToneOscillator = oscillator1;
+      // Store both oscillators to stop later
+      this.dialToneOscillators = [oscillator1, oscillator2];
 
       console.log('SipML5: Dial tone started');
     } catch (error) {
@@ -86,14 +86,17 @@ export class SipML5Service {
   }
 
   private stopDialTone() {
-    if (this.dialToneOscillator) {
-      try {
-        this.dialToneOscillator.stop();
-        this.dialToneOscillator.disconnect();
-      } catch (error) {
-        // Oscillator might already be stopped
-      }
-      this.dialToneOscillator = undefined;
+    if (this.dialToneOscillators.length > 0) {
+      this.dialToneOscillators.forEach(oscillator => {
+        try {
+          oscillator.stop();
+          oscillator.disconnect();
+        } catch (error) {
+          // Oscillator might already be stopped
+        }
+      });
+      this.dialToneOscillators = [];
+      console.log('SipML5: Dial tone stopped');
     }
   }
 
@@ -430,6 +433,7 @@ export class SipML5Service {
       case 'connected':
         this.stopDialTone(); // Stop dial tone when call connects
         this.stopRingtone(); // Stop ringtone when call connects
+        console.log('SipML5: Call connected, audio feedback stopped');
         this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection, isOnHold: false });
         break;
         
@@ -598,6 +602,10 @@ export class SipML5Service {
           this.remoteAudio.style.display = 'none';
           document.body.appendChild(this.remoteAudio);
         }
+        
+        // Stop any audio feedback when answering
+        this.stopDialTone();
+        this.stopRingtone();
         
         // Try immediate accept first
         let result = this.callSession.accept({
