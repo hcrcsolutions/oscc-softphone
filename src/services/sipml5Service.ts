@@ -42,7 +42,7 @@ export class SipML5Service {
   private onRegistrationStateChanged?: (registered: boolean) => void;
   private isInitialized = false;
   private isStackStarted = false;
-  private remoteAudio?: HTMLAudioElement;
+  private sessionAudioElements: Map<string, HTMLAudioElement> = new Map(); // Per-session audio elements
   private loadPromise?: Promise<void>;
   private audioContext?: AudioContext;
   private ringbackOscillators: OscillatorNode[] = [];
@@ -78,6 +78,41 @@ export class SipML5Service {
     };
 
     this.onCallStateChanged?.(callState);
+  }
+
+  private createAudioElementForSession(sessionId: string): HTMLAudioElement {
+    if (this.sessionAudioElements.has(sessionId)) {
+      return this.sessionAudioElements.get(sessionId)!;
+    }
+
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.controls = false;
+    audio.style.display = 'none';
+
+    document.body.appendChild(audio);
+    this.sessionAudioElements.set(sessionId, audio);
+    
+    console.log(`Audio element created for session: ${sessionId}`);
+    return audio;
+  }
+
+  private cleanupAudioForSession(sessionId: string) {
+    const audio = this.sessionAudioElements.get(sessionId);
+    if (audio) {
+      if (audio.parentNode) {
+        audio.parentNode.removeChild(audio);
+      }
+      this.sessionAudioElements.delete(sessionId);
+      console.log(`Audio cleanup completed for session: ${sessionId}`);
+    }
+  }
+
+  private cleanupAllAudioStreams() {
+    // Clean up all session audio elements
+    for (const sessionId of this.sessionAudioElements.keys()) {
+      this.cleanupAudioForSession(sessionId);
+    }
   }
 
   private setupAudioContext() {
@@ -505,7 +540,7 @@ export class SipML5Service {
           this.activeSessionId = undefined;
         }
         this.updateCallState(sessionId, 'idle');
-        this.cleanupAudio();
+        this.cleanupAudioForSession(sessionId);
         break;
         
       case 'failed':
@@ -543,7 +578,7 @@ export class SipML5Service {
         if (this.activeSessionId === sessionId) {
           this.activeSessionId = undefined;
         }
-        this.cleanupAudio();
+        this.cleanupAudioForSession(sessionId);
         break;
     }
   }
@@ -634,15 +669,11 @@ export class SipML5Service {
       
       console.log('SipML5: Making call to', target);
       
-      // Create and configure remote audio element
-      this.remoteAudio = document.createElement('audio');
-      this.remoteAudio.autoplay = true;
-      this.remoteAudio.controls = false;
-      this.remoteAudio.style.display = 'none';
-      document.body.appendChild(this.remoteAudio);
+      // Create audio element for this specific session
+      const remoteAudio = this.createAudioElementForSession(sessionId);
       
       const callSession = this.sipStack.newSession('call-audio', {
-        audio_remote: this.remoteAudio,
+        audio_remote: remoteAudio,
         events_listener: {
           events: '*',
           listener: (event: any) => this.handleCallEvent(event, sessionId)
@@ -722,16 +753,12 @@ export class SipML5Service {
 
   async answerCall(): Promise<void> {
     const activeSession = this.getActiveSession();
-    if (activeSession) {
+    const activeCallInfo = this.getActiveCallInfo();
+    
+    if (activeSession && activeCallInfo) {
       try {
-        // Create and configure remote audio element if not already created
-        if (!this.remoteAudio) {
-          this.remoteAudio = document.createElement('audio');
-          this.remoteAudio.autoplay = true;
-          this.remoteAudio.controls = false;
-          this.remoteAudio.style.display = 'none';
-          document.body.appendChild(this.remoteAudio);
-        }
+        // Create audio element for this specific session
+        const remoteAudio = this.createAudioElementForSession(activeCallInfo.sessionId);
         
         // Stop any audio feedback when answering
         this.stopRingbackTone();
@@ -739,7 +766,7 @@ export class SipML5Service {
         
         // Try immediate accept first
         let result = activeSession.accept({
-          audio_remote: this.remoteAudio
+          audio_remote: remoteAudio
         });
         
         // If immediate accept failed, wait briefly and retry
@@ -761,7 +788,7 @@ export class SipML5Service {
             
             // Try accepting again
             result = activeSession.accept({
-              audio_remote: this.remoteAudio
+              audio_remote: remoteAudio
             });
             
             if (result === 0) {
@@ -900,12 +927,6 @@ export class SipML5Service {
     }
   }
 
-  private cleanupAudio() {
-    if (this.remoteAudio && document.body.contains(this.remoteAudio)) {
-      document.body.removeChild(this.remoteAudio);
-      this.remoteAudio = undefined;
-    }
-  }
 
   async disconnect(): Promise<void> {
     try {
@@ -933,7 +954,7 @@ export class SipML5Service {
       // Cleanup all audio
       this.stopRingbackTone();
       this.stopRingtone();
-      this.cleanupAudio();
+      this.cleanupAllAudioStreams();
       
       // Close audio context
       if (this.audioContext) {

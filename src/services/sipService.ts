@@ -44,7 +44,7 @@ export class SipService {
   private config?: SipConfig;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
-  private remoteAudio?: HTMLAudioElement;
+  private sessionAudioElements: Map<string, HTMLAudioElement> = new Map(); // Per-session audio elements
   private dialToneAudio?: HTMLAudioElement;
   private ringtoneAudio?: HTMLAudioElement;
   private audioContext?: AudioContext;
@@ -115,32 +115,49 @@ export class SipService {
     });
   }
 
+  private createAudioElementForSession(sessionId: string): HTMLAudioElement {
+    if (this.sessionAudioElements.has(sessionId)) {
+      return this.sessionAudioElements.get(sessionId)!;
+    }
+
+    const audio = new Audio();
+    audio.autoplay = true;
+    audio.controls = false;
+    audio.muted = false;
+    audio.volume = 1.0;
+
+    // Add event listeners for debugging
+    audio.addEventListener('loadstart', () => console.log(`Audio (${sessionId}): loadstart`));
+    audio.addEventListener('loadeddata', () => console.log(`Audio (${sessionId}): loadeddata`));
+    audio.addEventListener('canplay', () => console.log(`Audio (${sessionId}): canplay`));
+    audio.addEventListener('playing', () => console.log(`Audio (${sessionId}): playing`));
+    audio.addEventListener('error', (e) => console.error(`Audio error (${sessionId}):`, e));
+
+    document.body.appendChild(audio);
+    this.sessionAudioElements.set(sessionId, audio);
+    
+    return audio;
+  }
+
+  private cleanupAudioForSession(sessionId: string) {
+    const audio = this.sessionAudioElements.get(sessionId);
+    if (audio) {
+      audio.srcObject = null;
+      audio.pause();
+      if (audio.parentNode) {
+        audio.parentNode.removeChild(audio);
+      }
+      this.sessionAudioElements.delete(sessionId);
+      console.log(`Audio cleanup completed for session: ${sessionId}`);
+    }
+  }
+
   async configure(config: SipConfig): Promise<void> {
     this.config = config;
-    this.setupRemoteAudio();
     await this.disconnect();
     await this.connect();
   }
 
-  private setupRemoteAudio() {
-    if (!this.remoteAudio) {
-      this.remoteAudio = new Audio();
-      this.remoteAudio.autoplay = true;
-      this.remoteAudio.controls = false;
-      this.remoteAudio.muted = false;
-      this.remoteAudio.volume = 1.0;
-      
-      // Add event listeners for debugging
-      this.remoteAudio.addEventListener('loadstart', () => console.log('Audio: loadstart'));
-      this.remoteAudio.addEventListener('loadeddata', () => console.log('Audio: loadeddata'));
-      this.remoteAudio.addEventListener('canplay', () => console.log('Audio: canplay'));
-      this.remoteAudio.addEventListener('playing', () => console.log('Audio: playing'));
-      this.remoteAudio.addEventListener('error', (e) => console.error('Audio error:', e));
-      
-      document.body.appendChild(this.remoteAudio);
-      console.log('Remote audio element created and added to DOM');
-    }
-  }
 
   private setupAudioContext() {
     if (!this.audioContext) {
@@ -284,9 +301,12 @@ export class SipService {
     }
   }
 
-  private setupAudioStreams(session: any) {
+  private setupAudioStreams(session: any, sessionId: string) {
     try {
-      console.log('Setting up audio streams for session:', session);
+      console.log('Setting up audio streams for session:', sessionId);
+      
+      // Create audio element for this specific session
+      const remoteAudio = this.createAudioElementForSession(sessionId);
       
       // Get the session description handler
       const pc = session.sessionDescriptionHandler?.peerConnection;
@@ -300,9 +320,9 @@ export class SipService {
       
       // Set up ontrack event handler for incoming media
       pc.ontrack = (event: RTCTrackEvent) => {
-        console.log('Track received:', event.track.kind, 'streams:', event.streams.length);
+        console.log(`Track received for session ${sessionId}:`, event.track.kind, 'streams:', event.streams.length);
         
-        if (event.track.kind === 'audio' && this.remoteAudio) {
+        if (event.track.kind === 'audio') {
           let remoteStream: MediaStream;
           
           if (event.streams && event.streams.length > 0) {
@@ -313,18 +333,18 @@ export class SipService {
             console.log('Creating new stream from track');
           }
           
-          console.log('Setting remote stream to audio element');
-          this.remoteAudio.srcObject = remoteStream;
+          console.log(`Setting remote stream to audio element for session ${sessionId}`);
+          remoteAudio.srcObject = remoteStream;
           
           // Ensure volume is up
-          this.remoteAudio.volume = 1.0;
-          this.remoteAudio.muted = false;
+          remoteAudio.volume = 1.0;
+          remoteAudio.muted = false;
           
           // Try to play
-          this.remoteAudio.play().then(() => {
-            console.log('✓ Remote audio playback started successfully');
+          remoteAudio.play().then(() => {
+            console.log(`✓ Remote audio playback started successfully for session ${sessionId}`);
           }).catch((error) => {
-            console.error('Failed to start audio playback:', error);
+            console.error(`Failed to start audio playback for session ${sessionId}:`, error);
             // On error, we might need user interaction
             console.log('Audio may require user interaction to start');
             
@@ -343,17 +363,17 @@ export class SipService {
       console.log('Checking existing receivers:', receivers.length);
       
       receivers.forEach((receiver: RTCRtpReceiver) => {
-        if (receiver.track && receiver.track.kind === 'audio' && this.remoteAudio) {
-          console.log('Found existing audio track, setting up stream');
+        if (receiver.track && receiver.track.kind === 'audio') {
+          console.log(`Found existing audio track for session ${sessionId}, setting up stream`);
           const remoteStream = new MediaStream([receiver.track]);
-          this.remoteAudio.srcObject = remoteStream;
-          this.remoteAudio.volume = 1.0;
-          this.remoteAudio.muted = false;
+          remoteAudio.srcObject = remoteStream;
+          remoteAudio.volume = 1.0;
+          remoteAudio.muted = false;
           
-          this.remoteAudio.play().then(() => {
-            console.log('✓ Remote audio playback started from existing track');
+          remoteAudio.play().then(() => {
+            console.log(`✓ Remote audio playback started from existing track for session ${sessionId}`);
           }).catch((error) => {
-            console.error('Failed to start audio from existing track:', error);
+            console.error(`Failed to start audio from existing track for session ${sessionId}:`, error);
             console.warn('Audio playback requires user interaction. User may need to click to enable audio.');
           });
         }
@@ -364,10 +384,10 @@ export class SipService {
     }
   }
 
-  private cleanupAudioStreams() {
-    if (this.remoteAudio) {
-      this.remoteAudio.srcObject = null;
-      this.remoteAudio.pause();
+  private cleanupAllAudioStreams() {
+    // Clean up all session audio elements
+    for (const sessionId of this.sessionAudioElements.keys()) {
+      this.cleanupAudioForSession(sessionId);
     }
   }
 
@@ -384,7 +404,6 @@ export class SipService {
 
     try {
       // Ensure remote audio is set up
-      this.setupRemoteAudio();
       
       const domain = this.config.domain || this.config.server;
       
@@ -514,11 +533,11 @@ export class SipService {
         case SessionState.Established:
           this.stopRingbackTone(); // Stop ringback tone if any
           this.stopRingtone(); // Stop ringtone when call is answered
-          this.setupAudioStreams(invitation);
+          this.setupAudioStreams(invitation, sessionId);
           this.updateCallState(sessionId, 'connected');
           break;
         case SessionState.Terminated:
-          this.cleanupAudioStreams();
+          this.cleanupAudioForSession(sessionId);
           this.sessions.delete(sessionId);
           this.callInfos.delete(sessionId);
           if (this.activeSessionId === sessionId) {
@@ -609,13 +628,13 @@ export class SipService {
             break;
           case SessionState.Established:
             this.stopRingbackTone(); // Stop ringback tone when call is connected
-            this.setupAudioStreams(session);
+            this.setupAudioStreams(session, sessionId);
             this.updateCallState(sessionId, 'connected');
             break;
           case SessionState.Terminated:
             this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
-            this.cleanupAudioStreams();
+            this.cleanupAudioForSession(sessionId);
             this.sessions.delete(sessionId);
             this.callInfos.delete(sessionId);
             if (this.activeSessionId === sessionId) {
@@ -860,12 +879,7 @@ export class SipService {
       // Cleanup all audio
       this.stopRingbackTone();
       this.stopRingtone();
-      this.cleanupAudioStreams();
-      
-      if (this.remoteAudio && this.remoteAudio.parentNode) {
-        this.remoteAudio.parentNode.removeChild(this.remoteAudio);
-        this.remoteAudio = undefined;
-      }
+      this.cleanupAllAudioStreams();
       
       // Close audio context
       if (this.audioContext) {
