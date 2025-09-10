@@ -378,6 +378,30 @@ export class SipService {
   async answerCall(): Promise<void> {
     if (this.currentSession && this.currentSession.accept) {
       try {
+        // If session is establishing, wait a bit for it to stabilize
+        if (this.currentSession.state === SessionState.Establishing) {
+          console.log('Session is establishing, waiting for stabilization...');
+          
+          // Wait with exponential backoff
+          let attempts = 0;
+          const maxAttempts = 10;
+          
+          while (this.currentSession.state === SessionState.Establishing && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempts))); // 100ms, 200ms, 400ms, etc.
+            attempts++;
+            console.log(`Attempt ${attempts}: Session state is ${this.currentSession.state}`);
+            
+            // Check if session was terminated while waiting
+            if (this.currentSession.state === SessionState.Terminated) {
+              throw new Error('Call was terminated before it could be answered');
+            }
+          }
+          
+          if (this.currentSession.state === SessionState.Establishing) {
+            throw new Error('Timeout waiting for session to be ready for accept');
+          }
+        }
+        
         await this.currentSession.accept();
       } catch (error: any) {
         console.error('Failed to answer call:', error);
@@ -385,7 +409,16 @@ export class SipService {
         let errorMessage = 'Failed to answer call.';
         let errorCode = 'ANSWER_FAILED';
         
-        if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
+        if (error.message?.includes('Timeout waiting')) {
+          errorMessage = 'Call answer timed out. Please try again.';
+          errorCode = 'ANSWER_TIMEOUT';
+        } else if (error.message?.includes('terminated before')) {
+          errorMessage = 'Call was cancelled before it could be answered.';
+          errorCode = 'CALL_CANCELLED';
+        } else if (error.message?.includes('Invalid session state')) {
+          errorMessage = 'Cannot answer call in current state. Please try again.';
+          errorCode = 'INVALID_STATE';
+        } else if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
           errorMessage = 'Microphone access denied or not available.';
           errorCode = 'MEDIA_ERROR';
         }

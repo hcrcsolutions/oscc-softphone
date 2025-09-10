@@ -474,6 +474,30 @@ export class SipML5Service {
           document.body.appendChild(this.remoteAudio);
         }
         
+        // Check if session is still initializing and wait if needed
+        if (this.callSession.isConnecting && this.callSession.isConnecting()) {
+          console.log('SipML5: Session is connecting, waiting for stabilization...');
+          
+          // Wait with exponential backoff
+          let attempts = 0;
+          const maxAttempts = 10;
+          
+          while (this.callSession.isConnecting && this.callSession.isConnecting() && attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempts))); // 100ms, 200ms, 400ms, etc.
+            attempts++;
+            console.log(`SipML5: Attempt ${attempts}: Session connecting state: ${this.callSession.isConnecting ? this.callSession.isConnecting() : 'unknown'}`);
+            
+            // Check if session was terminated while waiting
+            if (!this.callSession || (this.callSession.isTerminated && this.callSession.isTerminated())) {
+              throw new Error('Call was terminated before it could be answered');
+            }
+          }
+          
+          if (this.callSession.isConnecting && this.callSession.isConnecting()) {
+            throw new Error('Timeout waiting for session to be ready for accept');
+          }
+        }
+        
         const result = this.callSession.accept({
           audio_remote: this.remoteAudio
         });
@@ -504,19 +528,30 @@ export class SipML5Service {
       } catch (error: any) {
         console.error('SipML5: Failed to answer call:', error);
         
-        // If we haven't already set an error message
-        if (!error.message?.includes('Failed to answer')) {
-          const errorMessage = 'Failed to answer call. Please check your microphone settings.';
-          this.onCallStateChanged?.({
-            status: 'failed',
-            remoteNumber: this.currentRemoteNumber,
-            errorMessage,
-            errorCode: 'ANSWER_FAILED'
-          });
-          throw new Error(errorMessage);
+        let errorMessage = 'Failed to answer call.';
+        let errorCode = 'ANSWER_FAILED';
+        
+        if (error.message?.includes('Timeout waiting')) {
+          errorMessage = 'Call answer timed out. Please try again.';
+          errorCode = 'ANSWER_TIMEOUT';
+        } else if (error.message?.includes('terminated before')) {
+          errorMessage = 'Call was cancelled before it could be answered.';
+          errorCode = 'CALL_CANCELLED';
+        } else if (error.message?.includes('Invalid call state') || error.message?.includes('Failed to answer call')) {
+          // Use existing error message if it's already specific
+          errorMessage = error.message;
+        } else if (!error.message?.includes('Phone') && !error.message?.includes('Failed to answer')) {
+          errorMessage = 'Failed to answer call. Please check your microphone settings.';
         }
         
-        throw error;
+        this.onCallStateChanged?.({
+          status: 'failed',
+          remoteNumber: this.currentRemoteNumber,
+          errorMessage,
+          errorCode
+        });
+        
+        throw new Error(errorMessage);
       }
     }
   }
