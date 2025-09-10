@@ -22,6 +22,7 @@ export interface CallState {
   direction?: 'incoming' | 'outgoing';
   errorMessage?: string;
   errorCode?: string;
+  isOnHold?: boolean;
 }
 
 export class SipService {
@@ -34,6 +35,7 @@ export class SipService {
   private remoteAudio?: HTMLAudioElement;
   private currentRemoteNumber?: string;
   private currentCallDirection?: 'incoming' | 'outgoing';
+  private isCurrentCallOnHold: boolean = false;
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -281,7 +283,7 @@ export class SipService {
       switch (state) {
         case SessionState.Established:
           this.setupAudioStreams(invitation);
-          this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming' });
+          this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming', isOnHold: false });
           break;
         case SessionState.Terminated:
           this.cleanupAudioStreams();
@@ -323,7 +325,7 @@ export class SipService {
             break;
           case SessionState.Established:
             this.setupAudioStreams(this.currentSession);
-            this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing' });
+            this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing', isOnHold: false });
             break;
           case SessionState.Terminated:
             this.cleanupAudioStreams();
@@ -331,6 +333,7 @@ export class SipService {
             this.currentSession = undefined;
             this.currentRemoteNumber = undefined;
             this.currentCallDirection = undefined;
+            this.isCurrentCallOnHold = false;
             break;
         }
       });
@@ -424,6 +427,74 @@ export class SipService {
         console.error('Failed to hangup:', error);
         // Don't throw here, just log - hangup should always succeed from user perspective
       }
+    }
+  }
+
+  async holdCall(): Promise<void> {
+    if (this.currentSession && this.currentSession.state === SessionState.Established) {
+      try {
+        if (!this.isCurrentCallOnHold) {
+          // Mute the microphone to simulate hold
+          const pc = this.currentSession.sessionDescriptionHandler?.peerConnection;
+          if (pc) {
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = false;
+              }
+            });
+          }
+          
+          this.isCurrentCallOnHold = true;
+          this.onCallStateChanged?.({ 
+            status: 'connected', 
+            remoteNumber: this.currentRemoteNumber, 
+            direction: this.currentCallDirection,
+            isOnHold: true
+          });
+          
+          console.log('Call placed on hold');
+        }
+      } catch (error: any) {
+        console.error('Failed to hold call:', error);
+        throw new Error('Failed to place call on hold');
+      }
+    } else {
+      throw new Error('No active call to hold');
+    }
+  }
+
+  async unholdCall(): Promise<void> {
+    if (this.currentSession && this.currentSession.state === SessionState.Established) {
+      try {
+        if (this.isCurrentCallOnHold) {
+          // Unmute the microphone to resume call
+          const pc = this.currentSession.sessionDescriptionHandler?.peerConnection;
+          if (pc) {
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = true;
+              }
+            });
+          }
+          
+          this.isCurrentCallOnHold = false;
+          this.onCallStateChanged?.({ 
+            status: 'connected', 
+            remoteNumber: this.currentRemoteNumber, 
+            direction: this.currentCallDirection,
+            isOnHold: false
+          });
+          
+          console.log('Call resumed from hold');
+        }
+      } catch (error: any) {
+        console.error('Failed to unhold call:', error);
+        throw new Error('Failed to resume call from hold');
+      }
+    } else {
+      throw new Error('No active call to unhold');
     }
   }
 

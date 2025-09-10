@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { TbPhone, TbPhoneOff, TbPhoneIncoming } from 'react-icons/tb';
+import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay } from 'react-icons/tb';
 import { SipML5Service, CallState, SipML5Config } from '@/services/sipml5Service';
 
 interface Phone2Props {
@@ -257,6 +257,19 @@ export default function Phone2({ theme }: Phone2Props) {
     }
   };
 
+  const handleHold = async () => {
+    try {
+      if (callState.isOnHold) {
+        await sipService.current.unholdCall();
+      } else {
+        await sipService.current.holdCall();
+      }
+    } catch (error: any) {
+      console.error('Failed to toggle hold:', error);
+      showError('Failed to toggle hold. Please try again.');
+    }
+  };
+
   const enableAudio = () => {
     // This function helps with browser autoplay policies
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -297,7 +310,8 @@ export default function Phone2({ theme }: Phone2Props) {
       case 'connecting': return 'Connecting...';
       case 'connected': {
         const timer = callDuration > 0 ? ` (${formatDuration(callDuration)})` : '';
-        return `Connected to ${callState.remoteNumber}${timer}`;
+        const holdStatus = callState.isOnHold ? ' - On Hold' : '';
+        return `Connected to ${callState.remoteNumber}${timer}${holdStatus}`;
       }
       case 'ringing': return `Incoming call from ${callState.remoteNumber}`;
       case 'failed': return 'Call Failed';
@@ -394,13 +408,33 @@ export default function Phone2({ theme }: Phone2Props) {
                     </button>
                   </div>
                 ) : callState.status === 'connected' || callState.status === 'connecting' ? (
-                  <button 
-                    onClick={handleHangup}
-                    className="btn btn-error w-full"
-                  >
-                    <TbPhoneOff className="w-5 h-5" />
-                    Hang Up
-                  </button>
+                  <div className="flex gap-2">
+                    {callState.status === 'connected' && (
+                      <button 
+                        onClick={handleHold}
+                        className={`btn flex-1 ${callState.isOnHold ? 'btn-warning' : 'btn-info'}`}
+                      >
+                        {callState.isOnHold ? (
+                          <>
+                            <TbPlayerPlay className="w-5 h-5" />
+                            Resume
+                          </>
+                        ) : (
+                          <>
+                            <TbPlayerPause className="w-5 h-5" />
+                            Hold
+                          </>
+                        )}
+                      </button>
+                    )}
+                    <button 
+                      onClick={handleHangup}
+                      className={`btn btn-error ${callState.status === 'connected' ? 'flex-1' : 'w-full'}`}
+                    >
+                      <TbPhoneOff className="w-5 h-5" />
+                      Hang Up
+                    </button>
+                  </div>
                 ) : (
                   <button 
                     onClick={handleCall}

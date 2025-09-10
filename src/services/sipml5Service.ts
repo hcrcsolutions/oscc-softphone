@@ -13,6 +13,7 @@ export interface CallState {
   direction?: 'incoming' | 'outgoing';
   errorMessage?: string;
   errorCode?: string;
+  isOnHold?: boolean;
 }
 
 // Declare global SIPml for TypeScript
@@ -35,6 +36,7 @@ export class SipML5Service {
   private currentCallDirection?: 'incoming' | 'outgoing';
   private remoteAudio?: HTMLAudioElement;
   private loadPromise?: Promise<void>;
+  private isCurrentCallOnHold: boolean = false;
 
   constructor() {
     this.loadSipML5();
@@ -310,7 +312,7 @@ export class SipML5Service {
         break;
         
       case 'connected':
-        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
+        this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection, isOnHold: false });
         break;
         
       case 'terminating':
@@ -319,6 +321,7 @@ export class SipML5Service {
         this.currentRemoteNumber = undefined;
         this.currentCallDirection = undefined;
         this.callSession = null;
+        this.isCurrentCallOnHold = false;
         this.cleanupAudio();
         break;
         
@@ -354,6 +357,7 @@ export class SipML5Service {
         this.currentRemoteNumber = undefined;
         this.currentCallDirection = undefined;
         this.callSession = null;
+        this.isCurrentCallOnHold = false;
         this.cleanupAudio();
         break;
     }
@@ -525,6 +529,66 @@ export class SipML5Service {
       } catch (error) {
         console.error('SipML5: Failed to hangup:', error);
       }
+    }
+  }
+
+  async holdCall(): Promise<void> {
+    if (this.callSession && this.callSession.isConnected()) {
+      try {
+        if (!this.isCurrentCallOnHold) {
+          // SipML5 hold implementation - use dtmf or mute approach
+          const result = this.callSession.hold();
+          if (result !== 0) {
+            // Fallback to muting if hold is not supported
+            this.callSession.mute('audio');
+          }
+          
+          this.isCurrentCallOnHold = true;
+          this.onCallStateChanged?.({ 
+            status: 'connected', 
+            remoteNumber: this.currentRemoteNumber, 
+            direction: this.currentCallDirection,
+            isOnHold: true
+          });
+          
+          console.log('SipML5: Call placed on hold');
+        }
+      } catch (error: any) {
+        console.error('SipML5: Failed to hold call:', error);
+        throw new Error('Failed to place call on hold');
+      }
+    } else {
+      throw new Error('No active call to hold');
+    }
+  }
+
+  async unholdCall(): Promise<void> {
+    if (this.callSession && this.callSession.isConnected()) {
+      try {
+        if (this.isCurrentCallOnHold) {
+          // SipML5 unhold implementation
+          const result = this.callSession.resume ? this.callSession.resume() : this.callSession.unhold();
+          if (result !== 0) {
+            // Fallback to unmuting if unhold is not supported
+            this.callSession.unmute('audio');
+          }
+          
+          this.isCurrentCallOnHold = false;
+          this.onCallStateChanged?.({ 
+            status: 'connected', 
+            remoteNumber: this.currentRemoteNumber, 
+            direction: this.currentCallDirection,
+            isOnHold: false
+          });
+          
+          console.log('SipML5: Call resumed from hold');
+        }
+      } catch (error: any) {
+        console.error('SipML5: Failed to unhold call:', error);
+        throw new Error('Failed to resume call from hold');
+      }
+    } else {
+      throw new Error('No active call to unhold');
     }
   }
 
