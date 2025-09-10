@@ -451,7 +451,18 @@ export default function Phone2({ theme }: Phone2Props) {
                   ))}
                 </div>
                 
-                {callState.status === 'ringing' ? (
+                {/* Always show the call button for making new calls */}
+                <button 
+                  onClick={handleCall}
+                  disabled={!isRegistered || phoneNumber.trim() === ''}
+                  className="btn btn-primary w-full mb-4"
+                >
+                  <TbPhone className="w-5 h-5" />
+                  Call {phoneNumber}
+                </button>
+
+                {/* Call state specific controls */}
+                {callState.status === 'ringing' && (
                   <div className="flex gap-2">
                     <button 
                       onClick={handleAnswer}
@@ -468,7 +479,9 @@ export default function Phone2({ theme }: Phone2Props) {
                       Decline
                     </button>
                   </div>
-                ) : callState.status === 'connected' || callState.status === 'connecting' ? (
+                )}
+
+                {(callState.status === 'connected' || callState.status === 'connecting') && (
                   <div className="flex gap-2">
                     {callState.status === 'connected' && (
                       <button 
@@ -496,15 +509,12 @@ export default function Phone2({ theme }: Phone2Props) {
                       Hang Up
                     </button>
                   </div>
-                ) : (
-                  <button 
-                    onClick={handleCall}
-                    className={`btn w-full ${!isRegistered || !phoneNumber.trim() ? 'btn-disabled' : 'btn-success'}`}
-                    disabled={!isRegistered || !phoneNumber.trim()}
-                  >
-                    <TbPhone className="w-5 h-5" />
-                    Call
-                  </button>
+                )}
+
+                {callState.status === 'idle' && (
+                  <div className="text-center text-sm opacity-70 mt-2">
+                    Ready to make calls
+                  </div>
                 )}
               </>
             )}
