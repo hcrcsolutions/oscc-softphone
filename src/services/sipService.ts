@@ -856,6 +856,26 @@ export class SipService {
     }
   }
 
+  async rejectCall(): Promise<void> {
+    const activeSession = this.getActiveSession();
+    if (activeSession) {
+      try {
+        // For incoming calls (invitations), use reject method
+        if (activeSession.reject) {
+          await activeSession.reject();
+          console.log('Call rejected');
+        } else {
+          // Fallback to terminate if reject is not available
+          await activeSession.terminate();
+          console.log('Call terminated (no reject method available)');
+        }
+      } catch (error: any) {
+        console.error('Failed to reject call:', error);
+        // Don't throw here, just log - reject should always succeed from user perspective
+      }
+    }
+  }
+
   async holdCall(): Promise<void> {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
@@ -925,6 +945,88 @@ export class SipService {
       }
     } else {
       throw new Error('No active call to unhold');
+    }
+  }
+
+  async holdCallBySessionId(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    const callInfo = this.callInfos.get(sessionId);
+    
+    if (session && session.state === SessionState.Established && callInfo && !callInfo.isOnHold) {
+      try {
+        // Mute the microphone to hold call
+        const pc = session.sessionDescriptionHandler?.peerConnection;
+        if (pc) {
+          const senders = pc.getSenders();
+          senders.forEach((sender: RTCRtpSender) => {
+            if (sender.track && sender.track.kind === 'audio') {
+              sender.track.enabled = false;
+            }
+          });
+        }
+        
+        // Update call info
+        callInfo.isOnHold = true;
+        
+        // Mute the audio for this held call
+        this.setAudioForSession(sessionId, true);
+        
+        // Switch to another active call if available
+        const activeCalls = this.getCallInfosArray().filter(c => !c.isOnHold);
+        if (activeCalls.length > 0) {
+          this.activeSessionId = activeCalls[0].sessionId;
+        }
+        
+        this.updateCallState();
+        console.log('Call placed on hold:', sessionId);
+      } catch (error: any) {
+        console.error('Failed to hold call:', error);
+        throw new Error('Failed to place call on hold');
+      }
+    } else {
+      throw new Error('Call not found or cannot be held');
+    }
+  }
+
+  async unholdCallBySessionId(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    const callInfo = this.callInfos.get(sessionId);
+    
+    if (session && session.state === SessionState.Established && callInfo && callInfo.isOnHold) {
+      try {
+        // Hold all other calls first
+        for (const [otherSessionId, otherCallInfo] of this.callInfos.entries()) {
+          if (otherSessionId !== sessionId && !otherCallInfo.isOnHold) {
+            await this.holdCallBySessionId(otherSessionId);
+          }
+        }
+        
+        // Unmute the microphone to resume call
+        const pc = session.sessionDescriptionHandler?.peerConnection;
+        if (pc) {
+          const senders = pc.getSenders();
+          senders.forEach((sender: RTCRtpSender) => {
+            if (sender.track && sender.track.kind === 'audio') {
+              sender.track.enabled = true;
+            }
+          });
+        }
+        
+        // Update call info
+        callInfo.isOnHold = false;
+        this.activeSessionId = sessionId;
+        
+        // Manage audio: unmute this call, mute others
+        this.muteAllInactiveCalls();
+        
+        this.updateCallState();
+        console.log('Call resumed:', sessionId);
+      } catch (error: any) {
+        console.error('Failed to unhold call:', error);
+        throw new Error('Failed to resume call');
+      }
+    } else {
+      throw new Error('Call not found or not on hold');
     }
   }
 

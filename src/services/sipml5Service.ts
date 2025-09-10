@@ -942,6 +942,25 @@ export class SipML5Service {
     }
   }
 
+  async rejectCall(): Promise<void> {
+    const activeSession = this.getActiveSession();
+    if (activeSession) {
+      try {
+        // For incoming calls, use reject method if available
+        if (activeSession.reject) {
+          activeSession.reject();
+          console.log('SipML5: Call rejected');
+        } else {
+          // Fallback to hangup if reject is not available
+          activeSession.hangup();
+          console.log('SipML5: Call terminated (no reject method available)');
+        }
+      } catch (error) {
+        console.error('SipML5: Failed to reject call:', error);
+      }
+    }
+  }
+
   async holdCall(): Promise<void> {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
@@ -1010,6 +1029,79 @@ export class SipML5Service {
     }
   }
 
+  async holdCallBySessionId(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    const callInfo = this.callInfos.get(sessionId);
+    
+    if (session && session.isConnected() && callInfo && !callInfo.isOnHold) {
+      try {
+        // SipML5 hold implementation
+        const result = session.pause ? session.pause() : session.hold();
+        if (result !== 0) {
+          // Fallback to muting if hold is not supported
+          session.mute('audio');
+        }
+        
+        // Update call info
+        callInfo.isOnHold = true;
+        
+        // Mute the audio for this held call
+        this.setAudioForSession(sessionId, true);
+        
+        // Switch to another active call if available
+        const activeCalls = this.getCallInfosArray().filter(c => !c.isOnHold);
+        if (activeCalls.length > 0) {
+          this.activeSessionId = activeCalls[0].sessionId;
+        }
+        
+        this.updateCallState();
+        console.log('SipML5: Call placed on hold:', sessionId);
+      } catch (error: any) {
+        console.error('SipML5: Failed to hold call:', error);
+        throw new Error('Failed to place call on hold');
+      }
+    } else {
+      throw new Error('Call not found or cannot be held');
+    }
+  }
+
+  async unholdCallBySessionId(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    const callInfo = this.callInfos.get(sessionId);
+    
+    if (session && session.isConnected() && callInfo && callInfo.isOnHold) {
+      try {
+        // Hold all other calls first
+        for (const [otherSessionId, otherCallInfo] of this.callInfos.entries()) {
+          if (otherSessionId !== sessionId && !otherCallInfo.isOnHold) {
+            await this.holdCallBySessionId(otherSessionId);
+          }
+        }
+        
+        // SipML5 unhold implementation
+        const result = session.resume ? session.resume() : session.unhold();
+        if (result !== 0) {
+          // Fallback to unmuting if unhold is not supported
+          session.unmute('audio');
+        }
+        
+        // Update call info
+        callInfo.isOnHold = false;
+        this.activeSessionId = sessionId;
+        
+        // Manage audio: unmute this call, mute others
+        this.muteAllInactiveCalls();
+        
+        this.updateCallState();
+        console.log('SipML5: Call resumed:', sessionId);
+      } catch (error: any) {
+        console.error('SipML5: Failed to unhold call:', error);
+        throw new Error('Failed to resume call');
+      }
+    } else {
+      throw new Error('Call not found or not on hold');
+    }
+  }
 
   async disconnect(): Promise<void> {
     try {

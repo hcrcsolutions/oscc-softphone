@@ -17,23 +17,45 @@ export default function Phone2({ theme }: Phone2Props) {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
+  const [callDurations, setCallDurations] = useState<Map<string, number>>(new Map());
   const [extension, setExtension] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showErrorAlert, setShowErrorAlert] = useState(false);
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
+  const callTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const sipService = useRef<SipML5Service>(new SipML5Service());
 
   useEffect(() => {
     const service = sipService.current;
     
     service.setCallStateCallback((state: CallState) => {
+      console.log('Phone2 (SipML5) - Call state changed:', state);
       setCallState(state);
       
       // Update active calls list
       setActiveCalls(service.getAllActiveCalls());
       
-      // Track call start time when connected
+      // Handle per-call timers
+      if (state.status === 'connected' && state.sessionId) {
+        const sessionId = state.sessionId;
+        
+        // Start timer for this specific call if not already started
+        if (!callTimers.current.has(sessionId)) {
+          const startTime = new Date();
+          
+          const timer = setInterval(() => {
+            const now = new Date();
+            const elapsed = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+            setCallDurations(prev => new Map(prev.set(sessionId, elapsed)));
+          }, 1000);
+          
+          callTimers.current.set(sessionId, timer);
+          console.log('Timer started for call:', sessionId);
+        }
+      }
+      
+      // Legacy single call timer (kept for backward compatibility)
       if (state.status === 'connected' && !callStartTime.current) {
         callStartTime.current = new Date();
         console.log('Call started at:', callStartTime.current);
@@ -73,10 +95,37 @@ export default function Phone2({ theme }: Phone2Props) {
         showError(errorMsg);
       }
       
-      // Add to call history when call ends
+      // Clean up per-call timer and add to call history when call ends
       if (state.status === 'idle' && state.remoteNumber) {
+        console.log('Phone2 (SipML5) - Adding call to history:', state.remoteNumber);
         let duration: string | undefined;
-        if (callStartTime.current) {
+        
+        // Clean up per-call timer if available
+        if (state.sessionId && callTimers.current.has(state.sessionId)) {
+          const timer = callTimers.current.get(state.sessionId);
+          if (timer) {
+            clearInterval(timer);
+            callTimers.current.delete(state.sessionId);
+          }
+          
+          // Get final duration from per-call tracking
+          const finalDuration = callDurations.get(state.sessionId);
+          if (finalDuration) {
+            const minutes = Math.floor(finalDuration / 60);
+            const seconds = finalDuration % 60;
+            duration = minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
+            
+            // Clean up duration tracking
+            setCallDurations(prev => {
+              const newMap = new Map(prev);
+              newMap.delete(state.sessionId!);
+              return newMap;
+            });
+          }
+        }
+        
+        // Fallback to legacy timer if per-call timer not available
+        if (!duration && callStartTime.current) {
           const endTime = new Date();
           const durationMs = endTime.getTime() - callStartTime.current.getTime();
           const seconds = Math.floor(durationMs / 1000);
@@ -85,8 +134,6 @@ export default function Phone2({ theme }: Phone2Props) {
           duration = minutes > 0 ? `${minutes}:${remainingSeconds.toString().padStart(2, '0')}` : `${seconds}s`;
           console.log('Call ended, duration:', duration);
           callStartTime.current = null;
-        } else {
-          console.log('No call start time recorded');
         }
         
         const historyEntry = {
@@ -224,6 +271,15 @@ export default function Phone2({ theme }: Phone2Props) {
     }
   };
 
+  const handleReject = async () => {
+    try {
+      await sipService.current.rejectCall();
+    } catch (error: any) {
+      console.error('Failed to reject call:', error);
+      showError('Failed to reject call. Please try again.');
+    }
+  };
+
   const handleAnswer = async () => {
     try {
       // Check if we're in a secure context (HTTPS)
@@ -323,6 +379,12 @@ export default function Phone2({ theme }: Phone2Props) {
     }
   };
 
+  const formatElapsedTime = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className="p-8">
       {/* Error Alert */}
@@ -360,52 +422,49 @@ export default function Phone2({ theme }: Phone2Props) {
           <div className="card-body">
             <h3 className="card-title mb-4">Active Calls ({activeCalls.length})</h3>
             <div className="space-y-2">
-              {activeCalls.map((call) => (
-                <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-3 h-3 rounded-full ${call.isOnHold ? 'bg-warning' : 'bg-success'}`}></div>
-                    <div>
-                      <div className="font-semibold">{call.remoteNumber}</div>
-                      <div className="text-sm opacity-70">
-                        {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
+              {activeCalls.map((call) => {
+                const elapsedTime = callDurations.get(call.sessionId) || 0;
+                return (
+                  <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className={`w-3 h-3 rounded-full ${call.isOnHold ? 'bg-warning' : 'bg-success'}`}></div>
+                      <div>
+                        <div className="font-semibold">{call.remoteNumber}</div>
+                        <div className="text-sm opacity-70">
+                          {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
+                          {elapsedTime > 0 && <span className="ml-2 font-mono">({formatElapsedTime(elapsedTime)})</span>}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex gap-2">
-                    {call.isOnHold ? (
+                    <div className="flex gap-2">
+                      {call.isOnHold ? (
+                        <button
+                          onClick={() => sipService.current.unholdCallBySessionId(call.sessionId)}
+                          className="btn btn-sm btn-success"
+                          title="Resume call"
+                        >
+                          <TbPlayerPlay className="w-4 h-4" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
+                          className="btn btn-sm btn-warning"
+                          title="Hold call"
+                        >
+                          <TbPlayerPause className="w-4 h-4" />
+                        </button>
+                      )}
                       <button
-                        onClick={() => sipService.current.unholdCall()}
-                        className="btn btn-sm btn-success"
-                        title="Resume call"
+                        onClick={() => sipService.current.endCall(call.sessionId)}
+                        className="btn btn-sm btn-error"
+                        title="End call"
                       >
-                        <TbPlayerPlay className="w-4 h-4" />
+                        <TbPhoneOff className="w-4 h-4" />
                       </button>
-                    ) : (
-                      <button
-                        onClick={() => sipService.current.holdCall()}
-                        className="btn btn-sm btn-warning"
-                        title="Hold call"
-                      >
-                        <TbPlayerPause className="w-4 h-4" />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => sipService.current.switchToCall(call.sessionId)}
-                      className="btn btn-sm btn-primary"
-                      title="Switch to this call"
-                    >
-                      Switch
-                    </button>
-                    <button
-                      onClick={() => sipService.current.endCall(call.sessionId)}
-                      className="btn btn-sm btn-error"
-                      title="End call"
-                    >
-                      <TbPhoneOff className="w-4 h-4" />
-                    </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -472,7 +531,7 @@ export default function Phone2({ theme }: Phone2Props) {
                       Answer
                     </button>
                     <button 
-                      onClick={handleHangup}
+                      onClick={handleReject}
                       className="btn btn-error flex-1"
                     >
                       <TbPhoneOff className="w-5 h-5" />
@@ -481,7 +540,7 @@ export default function Phone2({ theme }: Phone2Props) {
                   </div>
                 )}
 
-                {(callState.status === 'connected' || callState.status === 'connecting') && (
+                {(callState.status === 'connected' || callState.status === 'connecting') && activeCalls.length === 1 && (
                   <div className="flex gap-2">
                     {callState.status === 'connected' && (
                       <button 
@@ -508,6 +567,12 @@ export default function Phone2({ theme }: Phone2Props) {
                       <TbPhoneOff className="w-5 h-5" />
                       Hang Up
                     </button>
+                  </div>
+                )}
+                
+                {activeCalls.length > 1 && (
+                  <div className="text-center text-sm opacity-70 mt-2">
+                    Use individual controls above to manage multiple calls
                   </div>
                 )}
 
