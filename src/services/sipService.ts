@@ -352,6 +352,9 @@ export class SipService {
       } else if (error.message?.includes('timeout')) {
         errorMessage = 'Call timeout. The number may be unreachable.';
         errorCode = 'TIMEOUT';
+      } else if (error.message?.includes('insecure context') || error.message?.includes('Media devices not available')) {
+        errorMessage = 'Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.';
+        errorCode = 'INSECURE_CONTEXT';
       } else if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
         errorMessage = 'Microphone access denied or not available.';
         errorCode = 'MEDIA_ERROR';

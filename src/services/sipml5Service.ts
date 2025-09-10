@@ -431,14 +431,25 @@ export class SipML5Service {
     } catch (error: any) {
       console.error('SipML5: Failed to make call:', error);
       
+      // Check for specific error types
+      let errorMessage = 'Failed to make call. Please try again.';
+      let errorCode = 'CALL_FAILED';
+      
+      if (error.message?.includes('insecure context') || error.message?.includes('Media devices not available')) {
+        errorMessage = 'Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.';
+        errorCode = 'INSECURE_CONTEXT';
+      } else if (error.message?.includes('media') || error.message?.includes('getUserMedia')) {
+        errorMessage = 'Microphone access denied or not available.';
+        errorCode = 'MEDIA_ERROR';
+      }
+      
       // If we haven't already set an error message, set a generic one
       if (!error.message?.includes('Phone') && !error.message?.includes('Failed to make call')) {
-        const errorMessage = error.message || 'Failed to make call. Please try again.';
         this.onCallStateChanged?.({
           status: 'failed',
           remoteNumber: number,
           errorMessage,
-          errorCode: 'CALL_FAILED'
+          errorCode
         });
         throw new Error(errorMessage);
       }

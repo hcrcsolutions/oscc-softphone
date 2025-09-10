@@ -164,6 +164,12 @@ export default function Phone2({ theme }: Phone2Props) {
     if (!phoneNumber.trim()) return;
     
     try {
+      // Check if we're in a secure context (HTTPS)
+      if (!window.isSecureContext) {
+        showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
+        return;
+      }
+      
       // Check for microphone permissions first
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
@@ -175,6 +181,9 @@ export default function Phone2({ theme }: Phone2Props) {
             return;
           } else if (permError.name === 'NotFoundError') {
             showError('No microphone found. Please connect a microphone to make calls.');
+            return;
+          } else if (permError.name === 'TypeError' && !window.isSecureContext) {
+            showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
             return;
           } else {
             showError('Failed to access microphone. Please check your audio settings.');
@@ -202,6 +211,12 @@ export default function Phone2({ theme }: Phone2Props) {
 
   const handleAnswer = async () => {
     try {
+      // Check if we're in a secure context (HTTPS)
+      if (!window.isSecureContext) {
+        showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
+        return;
+      }
+      
       // Check for microphone permissions first
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
@@ -213,6 +228,9 @@ export default function Phone2({ theme }: Phone2Props) {
             return;
           } else if (permError.name === 'NotFoundError') {
             showError('No microphone found. Please connect a microphone to answer calls.');
+            return;
+          } else if (permError.name === 'TypeError' && !window.isSecureContext) {
+            showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
             return;
           } else {
             showError('Failed to access microphone. Please check your audio settings.');
