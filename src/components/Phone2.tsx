@@ -12,7 +12,7 @@ export default function Phone2({ theme }: Phone2Props) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
   const [isRegistered, setIsRegistered] = useState(false);
-  const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming', duration?: string}>>([]);
+  const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming' | 'failed', duration?: string}>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [callDuration, setCallDuration] = useState(0);
@@ -52,6 +52,17 @@ export default function Phone2({ theme }: Phone2Props) {
           timerInterval.current = null;
         }
         setCallDuration(0);
+        
+        // Add failed call to history
+        if (state.remoteNumber) {
+          const historyEntry = {
+            number: state.remoteNumber,
+            time: new Date().toLocaleTimeString(),
+            type: 'failed' as const,
+            duration: undefined
+          };
+          setCallHistory(prev => [historyEntry, ...prev.slice(0, 9)]);
+        }
         
         // Show error alert
         const errorMsg = state.errorMessage || 'Call failed. Please check your connection and try again.';
@@ -416,7 +427,7 @@ export default function Phone2({ theme }: Phone2Props) {
                 <div key={index} className="flex justify-between items-center p-2 bg-base-200 rounded">
                   <span className="font-medium">{call.number}</span>
                   <div className="text-sm text-base-content/60">
-                    <span className={`badge badge-xs ${call.type === 'outgoing' ? 'badge-success' : 'badge-info'} mr-2`}>
+                    <span className={`badge badge-xs ${call.type === 'outgoing' ? 'badge-success' : call.type === 'incoming' ? 'badge-info' : 'badge-error'} mr-2`}>
                       {call.type}
                     </span>
                     {call.time}
