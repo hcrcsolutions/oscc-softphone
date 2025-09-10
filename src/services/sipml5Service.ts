@@ -37,9 +37,122 @@ export class SipML5Service {
   private remoteAudio?: HTMLAudioElement;
   private loadPromise?: Promise<void>;
   private isCurrentCallOnHold: boolean = false;
+  private audioContext?: AudioContext;
+  private dialToneOscillator?: OscillatorNode;
+  private ringtoneInterval?: NodeJS.Timeout;
 
   constructor() {
     this.loadSipML5();
+  }
+
+  private setupAudioContext() {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+  }
+
+  private generateDialTone() {
+    try {
+      this.setupAudioContext();
+      if (!this.audioContext) return;
+
+      // Stop any existing dial tone
+      this.stopDialTone();
+
+      // Create dual-frequency dial tone (350Hz + 440Hz)
+      const oscillator1 = this.audioContext.createOscillator();
+      const oscillator2 = this.audioContext.createOscillator();
+      const gainNode = this.audioContext.createGain();
+
+      oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
+      oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
+      
+      gainNode.gain.setValueAtTime(0.1, this.audioContext.currentTime); // Lower volume
+
+      oscillator1.connect(gainNode);
+      oscillator2.connect(gainNode);
+      gainNode.connect(this.audioContext.destination);
+
+      oscillator1.start();
+      oscillator2.start();
+
+      // Store reference to stop later
+      this.dialToneOscillator = oscillator1;
+
+      console.log('SipML5: Dial tone started');
+    } catch (error) {
+      console.error('SipML5: Failed to generate dial tone:', error);
+    }
+  }
+
+  private stopDialTone() {
+    if (this.dialToneOscillator) {
+      try {
+        this.dialToneOscillator.stop();
+        this.dialToneOscillator.disconnect();
+      } catch (error) {
+        // Oscillator might already be stopped
+      }
+      this.dialToneOscillator = undefined;
+    }
+  }
+
+  private generateRingtone() {
+    try {
+      this.setupAudioContext();
+      if (!this.audioContext) return;
+
+      // Stop any existing ringtone
+      this.stopRingtone();
+
+      // Create ringtone pattern (440Hz + 480Hz, 2s on, 4s off)
+      const playRing = () => {
+        if (!this.audioContext) return;
+        
+        const oscillator1 = this.audioContext.createOscillator();
+        const oscillator2 = this.audioContext.createOscillator();
+        const gainNode = this.audioContext.createGain();
+
+        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
+        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        
+        gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime);
+
+        oscillator1.connect(gainNode);
+        oscillator2.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
+
+        oscillator1.start();
+        oscillator2.start();
+
+        // Stop after 2 seconds
+        setTimeout(() => {
+          try {
+            oscillator1.stop();
+            oscillator2.stop();
+          } catch (error) {
+            // Already stopped
+          }
+        }, 2000);
+      };
+
+      // Play initial ring
+      playRing();
+
+      // Set up interval for repeated ringing
+      this.ringtoneInterval = setInterval(playRing, 6000);
+
+      console.log('SipML5: Ringtone started');
+    } catch (error) {
+      console.error('SipML5: Failed to generate ringtone:', error);
+    }
+  }
+
+  private stopRingtone() {
+    if (this.ringtoneInterval) {
+      clearInterval(this.ringtoneInterval);
+      this.ringtoneInterval = undefined;
+    }
   }
 
   private async loadSipML5(): Promise<void> {
@@ -292,6 +405,9 @@ export class SipML5Service {
     this.currentRemoteNumber = remoteUser;
     this.currentCallDirection = 'incoming';
     
+    // Start ringtone for incoming call
+    this.generateRingtone();
+    
     this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
     
     // Set up call event handlers
@@ -312,12 +428,16 @@ export class SipML5Service {
         break;
         
       case 'connected':
+        this.stopDialTone(); // Stop dial tone when call connects
+        this.stopRingtone(); // Stop ringtone when call connects
         this.onCallStateChanged?.({ status: 'connected', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection, isOnHold: false });
         break;
         
       case 'terminating':
       case 'terminated':
         this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
+        this.stopDialTone(); // Stop any audio feedback
+        this.stopRingtone();
         this.currentRemoteNumber = undefined;
         this.currentCallDirection = undefined;
         this.callSession = null;
@@ -354,6 +474,8 @@ export class SipML5Service {
           errorCode: failErrorCode
         });
         
+        this.stopDialTone(); // Stop any audio feedback
+        this.stopRingtone();
         this.currentRemoteNumber = undefined;
         this.currentCallDirection = undefined;
         this.callSession = null;
@@ -408,6 +530,9 @@ export class SipML5Service {
       });
 
       this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
+      
+      // Start dial tone for outgoing call
+      this.generateDialTone();
       
       const result = this.callSession.call(target);
       if (result !== 0) {
@@ -474,33 +599,38 @@ export class SipML5Service {
           document.body.appendChild(this.remoteAudio);
         }
         
-        // Check if session is still initializing and wait if needed
-        if (this.callSession.isConnecting && this.callSession.isConnecting()) {
-          console.log('SipML5: Session is connecting, waiting for stabilization...');
+        // Try immediate accept first
+        let result = this.callSession.accept({
+          audio_remote: this.remoteAudio
+        });
+        
+        // If immediate accept failed, wait briefly and retry
+        if (result !== 0 && result === -1 && this.callSession.isConnecting && this.callSession.isConnecting()) {
+          console.log('SipML5: Immediate accept failed, session connecting, waiting briefly...');
           
-          // Wait with exponential backoff
           let attempts = 0;
-          const maxAttempts = 10;
+          const maxAttempts = 3; // Reduced attempts
           
           while (this.callSession.isConnecting && this.callSession.isConnecting() && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempts))); // 100ms, 200ms, 400ms, etc.
+            await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
             attempts++;
-            console.log(`SipML5: Attempt ${attempts}: Session connecting state: ${this.callSession.isConnecting ? this.callSession.isConnecting() : 'unknown'}`);
+            console.log(`SipML5: Retry attempt ${attempts}`);
             
             // Check if session was terminated while waiting
             if (!this.callSession || (this.callSession.isTerminated && this.callSession.isTerminated())) {
               throw new Error('Call was terminated before it could be answered');
             }
-          }
-          
-          if (this.callSession.isConnecting && this.callSession.isConnecting()) {
-            throw new Error('Timeout waiting for session to be ready for accept');
+            
+            // Try accepting again
+            result = this.callSession.accept({
+              audio_remote: this.remoteAudio
+            });
+            
+            if (result === 0) {
+              break; // Success
+            }
           }
         }
-        
-        const result = this.callSession.accept({
-          audio_remote: this.remoteAudio
-        });
         
         if (result !== 0) {
           let errorMessage = 'Failed to answer call.';
@@ -652,7 +782,18 @@ export class SipML5Service {
         this.isStackStarted = false;
       }
       
+      // Cleanup all audio
+      this.stopDialTone();
+      this.stopRingtone();
       this.cleanupAudio();
+      
+      // Close audio context
+      if (this.audioContext) {
+        await this.audioContext.close();
+        this.audioContext = undefined;
+      }
+      
+      this.isCurrentCallOnHold = false;
       console.log('SipML5: Disconnected');
     } catch (error: any) {
       console.error('SipML5: Failed to disconnect:', error);

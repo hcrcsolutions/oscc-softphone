@@ -36,6 +36,11 @@ export class SipService {
   private currentRemoteNumber?: string;
   private currentCallDirection?: 'incoming' | 'outgoing';
   private isCurrentCallOnHold: boolean = false;
+  private dialToneAudio?: HTMLAudioElement;
+  private ringtoneAudio?: HTMLAudioElement;
+  private audioContext?: AudioContext;
+  private dialToneOscillator?: OscillatorNode;
+  private ringtoneInterval?: NodeJS.Timeout;
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -69,6 +74,116 @@ export class SipService {
       
       document.body.appendChild(this.remoteAudio);
       console.log('Remote audio element created and added to DOM');
+    }
+  }
+
+  private setupAudioContext() {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+  }
+
+  private generateDialTone() {
+    try {
+      this.setupAudioContext();
+      if (!this.audioContext) return;
+
+      // Stop any existing dial tone
+      this.stopDialTone();
+
+      // Create dual-frequency dial tone (350Hz + 440Hz)
+      const oscillator1 = this.audioContext.createOscillator();
+      const oscillator2 = this.audioContext.createOscillator();
+      const gainNode = this.audioContext.createGain();
+
+      oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
+      oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
+      
+      gainNode.gain.setValueAtTime(0.1, this.audioContext.currentTime); // Lower volume
+
+      oscillator1.connect(gainNode);
+      oscillator2.connect(gainNode);
+      gainNode.connect(this.audioContext.destination);
+
+      oscillator1.start();
+      oscillator2.start();
+
+      // Store reference to stop later
+      this.dialToneOscillator = oscillator1; // Store one for reference
+
+      console.log('Dial tone started');
+    } catch (error) {
+      console.error('Failed to generate dial tone:', error);
+    }
+  }
+
+  private stopDialTone() {
+    if (this.dialToneOscillator) {
+      try {
+        this.dialToneOscillator.stop();
+        this.dialToneOscillator.disconnect();
+      } catch (error) {
+        // Oscillator might already be stopped
+      }
+      this.dialToneOscillator = undefined;
+    }
+  }
+
+  private generateRingtone() {
+    try {
+      this.setupAudioContext();
+      if (!this.audioContext) return;
+
+      // Stop any existing ringtone
+      this.stopRingtone();
+
+      // Create ringtone pattern (440Hz + 480Hz, 2s on, 4s off)
+      const playRing = () => {
+        if (!this.audioContext) return;
+        
+        const oscillator1 = this.audioContext.createOscillator();
+        const oscillator2 = this.audioContext.createOscillator();
+        const gainNode = this.audioContext.createGain();
+
+        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
+        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        
+        gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime); // Moderate volume
+
+        oscillator1.connect(gainNode);
+        oscillator2.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
+
+        oscillator1.start();
+        oscillator2.start();
+
+        // Stop after 2 seconds
+        setTimeout(() => {
+          try {
+            oscillator1.stop();
+            oscillator2.stop();
+          } catch (error) {
+            // Already stopped
+          }
+        }, 2000);
+      };
+
+      // Play initial ring
+      playRing();
+
+      // Set up interval for repeated ringing (every 6 seconds: 2s ring + 4s silence)
+      this.ringtoneInterval = setInterval(playRing, 6000);
+
+      console.log('Ringtone started');
+    } catch (error) {
+      console.error('Failed to generate ringtone:', error);
+    }
+  }
+
+  private stopRingtone() {
+    if (this.ringtoneInterval) {
+      clearInterval(this.ringtoneInterval);
+      this.ringtoneInterval = undefined;
     }
   }
 
@@ -196,7 +311,10 @@ export class SipService {
           },
           peerConnectionOptions: {
             rtcConfiguration: {
-              iceServers: []
+              iceServers: [],
+              iceCandidatePoolSize: 0, // Reduce ICE gathering time
+              bundlePolicy: 'max-bundle',
+              rtcpMuxPolicy: 'require'
             }
           }
         }
@@ -277,11 +395,15 @@ export class SipService {
     this.currentCallDirection = 'incoming';
     this.currentRemoteNumber = remoteUser;
     
+    // Start ringtone for incoming call
+    this.generateRingtone();
+    
     this.onCallStateChanged?.({ status: 'ringing', remoteNumber: remoteUser, direction: 'incoming' });
 
     invitation.stateChange.addListener((state: SessionState) => {
       switch (state) {
         case SessionState.Established:
+          this.stopRingtone(); // Stop ringtone when call is answered
           this.setupAudioStreams(invitation);
           this.onCallStateChanged?.({ status: 'connected', remoteNumber: remoteUser, direction: 'incoming', isOnHold: false });
           break;
@@ -315,6 +437,9 @@ export class SipService {
 
       this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number });
 
+      // Start dial tone for outgoing call
+      this.generateDialTone();
+
       this.currentCallDirection = 'outgoing';
       this.currentRemoteNumber = number;
       
@@ -324,10 +449,13 @@ export class SipService {
             this.onCallStateChanged?.({ status: 'connecting', remoteNumber: number, direction: 'outgoing' });
             break;
           case SessionState.Established:
+            this.stopDialTone(); // Stop dial tone when call is connected
             this.setupAudioStreams(this.currentSession);
             this.onCallStateChanged?.({ status: 'connected', remoteNumber: number, direction: 'outgoing', isOnHold: false });
             break;
           case SessionState.Terminated:
+            this.stopDialTone(); // Stop any audio feedback
+            this.stopRingtone();
             this.cleanupAudioStreams();
             this.onCallStateChanged?.({ status: 'idle', remoteNumber: this.currentRemoteNumber, direction: this.currentCallDirection });
             this.currentSession = undefined;
@@ -378,16 +506,27 @@ export class SipService {
   async answerCall(): Promise<void> {
     if (this.currentSession && this.currentSession.accept) {
       try {
-        // If session is establishing, wait a bit for it to stabilize
+        // Try immediate accept first, only wait if it fails
+        try {
+          await this.currentSession.accept();
+          return; // Success, exit early
+        } catch (immediateError: any) {
+          if (!immediateError.message?.includes('Invalid session state')) {
+            throw immediateError; // If it's not a state error, rethrow
+          }
+          console.log('Immediate accept failed due to state, will wait and retry...');
+        }
+        
+        // If immediate accept failed due to state, wait a bit
         if (this.currentSession.state === SessionState.Establishing) {
-          console.log('Session is establishing, waiting for stabilization...');
+          console.log('Session is establishing, waiting briefly...');
           
-          // Wait with exponential backoff
+          // Much shorter wait with linear progression
           let attempts = 0;
-          const maxAttempts = 10;
+          const maxAttempts = 3; // Further reduced
           
           while (this.currentSession.state === SessionState.Establishing && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 100 * Math.pow(2, attempts))); // 100ms, 200ms, 400ms, etc.
+            await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
             attempts++;
             console.log(`Attempt ${attempts}: Session state is ${this.currentSession.state}`);
             
@@ -395,13 +534,21 @@ export class SipService {
             if (this.currentSession.state === SessionState.Terminated) {
               throw new Error('Call was terminated before it could be answered');
             }
-          }
-          
-          if (this.currentSession.state === SessionState.Establishing) {
-            throw new Error('Timeout waiting for session to be ready for accept');
+            
+            // Try accepting after each wait
+            try {
+              await this.currentSession.accept();
+              return; // Success, exit
+            } catch (retryError: any) {
+              if (attempts === maxAttempts || !retryError.message?.includes('Invalid session state')) {
+                throw retryError;
+              }
+              console.log(`Retry ${attempts} failed, continuing...`);
+            }
           }
         }
         
+        // Final attempt
         await this.currentSession.accept();
       } catch (error: any) {
         console.error('Failed to answer call:', error);
@@ -542,10 +689,21 @@ export class SipService {
       if (this.userAgent) {
         await this.userAgent.stop();
       }
+      
+      // Cleanup all audio
+      this.stopDialTone();
+      this.stopRingtone();
       this.cleanupAudioStreams();
+      
       if (this.remoteAudio && this.remoteAudio.parentNode) {
         this.remoteAudio.parentNode.removeChild(this.remoteAudio);
         this.remoteAudio = undefined;
+      }
+      
+      // Close audio context
+      if (this.audioContext) {
+        await this.audioContext.close();
+        this.audioContext = undefined;
       }
     } catch (error) {
       console.error('Failed to disconnect:', error);
@@ -553,6 +711,7 @@ export class SipService {
       this.userAgent = undefined;
       this.registerer = undefined;
       this.currentSession = undefined;
+      this.isCurrentCallOnHold = false;
     }
   }
 
