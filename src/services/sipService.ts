@@ -4,7 +4,8 @@ import {
   Inviter, 
   SessionState, 
   UserAgentOptions,
-  URI
+  URI,
+  Session
 } from 'sip.js';
 
 export interface SipConfig {
@@ -1360,38 +1361,57 @@ export class SipService {
     return this.isConferenceMode;
   }
 
-  // Transfer a call to FreeSWITCH conference room
+  // Transfer a call to FreeSWITCH conference room using SIP REFER
   private async transferToConference(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config?.server}`;
+    if (session.state !== SessionState.Established) {
+      throw new Error(`Session ${sessionId} is not established (state: ${session.state})`);
+    }
+
+    if (!this.config?.server || !this.conferenceRoomId) {
+      console.warn('Missing config server or conference room ID, skipping REFER');
+      return;
+    }
+
+    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
     
     try {
       // Send REFER to transfer the call to conference
       console.log(`Transferring session ${sessionId} to conference: ${conferenceUri}`);
       
-      // Create REFER request to transfer to conference
-      const referRequest = session.refer(conferenceUri, {
+      // Check if session has the request method
+      if (typeof session.request !== 'function') {
+        console.warn(`Session ${sessionId} does not support REFER requests, using client-side mixing`);
+        return;
+      }
+      
+      // Create REFER request manually using session's request method
+      const referToURI = new URI('sip', this.conferenceRoomId, this.config.server);
+      
+      const referRequest = session.request('REFER', {
+        extraHeaders: [
+          `Refer-To: ${referToURI.toString()}`,
+          'Referred-By: ' + session.remoteIdentity?.uri?.toString() || 'unknown'
+        ],
         requestDelegate: {
           onAccept: () => {
-            console.log(`Conference transfer accepted for session: ${sessionId}`);
+            console.log(`Conference REFER accepted for session: ${sessionId}`);
           },
           onReject: (response: any) => {
-            console.error(`Conference transfer rejected for session: ${sessionId}`, response);
+            console.error(`Conference REFER rejected for session: ${sessionId}`, response);
           }
         }
       });
       
-      // Wait for the REFER to complete
-      await referRequest;
-      
-      console.log(`Successfully transferred ${sessionId} to conference room ${this.conferenceRoomId}`);
+      console.log(`Successfully sent REFER for ${sessionId} to conference room ${this.conferenceRoomId}`);
     } catch (error) {
-      console.error(`Failed to transfer session ${sessionId} to conference:`, error);
-      throw error;
+      console.error(`Failed to send REFER for session ${sessionId} to conference:`, error);
+      // Don't throw here - fallback to client-side mixing
+      console.warn('Falling back to client-side audio mixing for conference');
     }
   }
 
