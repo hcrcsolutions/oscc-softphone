@@ -203,6 +203,31 @@ export class SipService {
     }
   }
 
+  // Pre-initialize media devices for faster call answering
+  async preInitializeMedia(): Promise<MediaStream | null> {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        console.warn('getUserMedia not supported');
+        return null;
+      }
+
+      // Get media stream early to speed up call answering
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+      
+      console.log('Media pre-initialized successfully');
+      return stream;
+    } catch (error) {
+      console.warn('Failed to pre-initialize media:', error);
+      return null;
+    }
+  }
+
   private generateRingbackTone() {
     try {
       this.setupAudioContext();
@@ -518,9 +543,12 @@ export class SipService {
               iceServers: [],
               iceCandidatePoolSize: 0, // Reduce ICE gathering time
               bundlePolicy: 'max-bundle',
-              rtcpMuxPolicy: 'require'
+              rtcpMuxPolicy: 'require',
+              iceTransportPolicy: 'all'
             }
-          }
+          },
+          // Pre-acquire media for faster connection
+          alwaysAcquireMediaFirst: true
         }
       };
 
@@ -832,10 +860,10 @@ export class SipService {
           console.log('Session is establishing, waiting for Initial state...');
           
           let attempts = 0;
-          const maxAttempts = 10; // Allow more attempts
+          const maxAttempts = 5; // Reduced attempts for faster response
           
           while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 100)); // Wait 100ms between checks
+            await new Promise(resolve => setTimeout(resolve, 50)); // Reduced wait time from 100ms to 50ms
             attempts++;
             
             const newState = activeSession.state;

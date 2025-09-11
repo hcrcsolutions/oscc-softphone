@@ -223,6 +223,31 @@ export class SipML5Service {
     }
   }
 
+  // Pre-initialize media devices for faster call answering
+  async preInitializeMedia(): Promise<MediaStream | null> {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        console.warn('getUserMedia not supported');
+        return null;
+      }
+
+      // Get media stream early to speed up call answering
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+      
+      console.log('Media pre-initialized successfully');
+      return stream;
+    } catch (error) {
+      console.warn('Failed to pre-initialize media:', error);
+      return null;
+    }
+  }
+
   private setupConferenceMixer(): void {
     try {
       this.setupAudioContext();

@@ -25,6 +25,7 @@ export default function Phone({ theme }: PhoneProps) {
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const callTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const preInitializedMedia = useRef<MediaStream | null>(null);
   const sipService = useRef<SipService>(new SipService());
 
   useEffect(() => {
@@ -39,6 +40,24 @@ export default function Phone({ theme }: PhoneProps) {
       
       // Update conference mode state
       setIsConferenceMode(service.isInConferenceMode());
+      
+      // Pre-initialize media for incoming calls to speed up answering
+      if (state.status === 'ringing' && !preInitializedMedia.current) {
+        console.log('Pre-initializing media for incoming call...');
+        service.preInitializeMedia().then(stream => {
+          preInitializedMedia.current = stream;
+          console.log('Media pre-initialized for faster call answering');
+        }).catch(error => {
+          console.warn('Failed to pre-initialize media:', error);
+        });
+      }
+      
+      // Clean up pre-initialized media when call ends
+      if (state.status === 'idle' && preInitializedMedia.current) {
+        preInitializedMedia.current.getTracks().forEach(track => track.stop());
+        preInitializedMedia.current = null;
+        console.log('Cleaned up pre-initialized media');
+      }
       
       // Handle per-call timers
       if (state.status === 'connected' && state.sessionId) {
@@ -321,10 +340,12 @@ export default function Phone({ theme }: PhoneProps) {
         return;
       }
       
-      // Check for microphone permissions first
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      // Check for microphone permissions (skip if already pre-initialized)
+      if (!preInitializedMedia.current && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
-          await navigator.mediaDevices.getUserMedia({ audio: true });
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          // Clean up this test stream since we only needed it for permission check
+          stream.getTracks().forEach(track => track.stop());
         } catch (permError: any) {
           console.error('Microphone permission error:', permError);
           if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
