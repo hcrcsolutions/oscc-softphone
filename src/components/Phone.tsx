@@ -495,6 +495,17 @@ export default function Phone({ theme }: PhoneProps) {
                       </div>
                     </div>
                     <div className="flex gap-2">
+                      {/* Accept call control - only show for ringing incoming calls */}
+                      {call.status === 'ringing' && call.direction === 'incoming' && (
+                        <button
+                          onClick={handleAnswer}
+                          className="btn btn-sm btn-success"
+                          title="Answer call"
+                        >
+                          <TbPhoneIncoming className="w-4 h-4" />
+                        </button>
+                      )}
+                      
                       {/* Conference participation controls */}
                       {isConferenceMode && activeCalls.length > 1 && (
                         isInConference ? (
