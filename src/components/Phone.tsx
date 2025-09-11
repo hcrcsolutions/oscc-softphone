@@ -21,6 +21,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [extension, setExtension] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showErrorAlert, setShowErrorAlert] = useState(false);
+  const [isAnswering, setIsAnswering] = useState(false);
   const callStartTime = useRef<Date | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const callTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -305,10 +306,15 @@ export default function Phone({ theme }: PhoneProps) {
   };
 
   const handleAnswer = async () => {
-    // Enable audio on user interaction
-    sipService.current.enableAudio();
+    // Prevent multiple clicks
+    if (isAnswering) return;
+    
+    setIsAnswering(true);
     
     try {
+      // Enable audio on user interaction
+      sipService.current.enableAudio();
+      
       // Check if we're in a secure context (HTTPS)
       if (!window.isSecureContext) {
         showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
@@ -341,6 +347,8 @@ export default function Phone({ theme }: PhoneProps) {
     } catch (error: any) {
       console.error('Failed to answer call:', error);
       showError('Failed to answer call. Please try again.');
+    } finally {
+      setIsAnswering(false);
     }
   };
 
@@ -500,7 +508,8 @@ export default function Phone({ theme }: PhoneProps) {
                         <button
                           onClick={handleAnswer}
                           className="btn btn-sm btn-success"
-                          title="Answer call"
+                          disabled={isAnswering}
+                          title={isAnswering ? "Connecting..." : "Answer call"}
                         >
                           <TbPhoneIncoming className="w-4 h-4" />
                         </button>
@@ -614,9 +623,10 @@ export default function Phone({ theme }: PhoneProps) {
               <button 
                 onClick={handleAnswer}
                 className="btn btn-success flex-1"
+                disabled={isAnswering}
               >
                 <TbPhoneIncoming className="w-5 h-5" />
-                Answer
+                {isAnswering ? 'Connecting...' : 'Answer'}
               </button>
               <button 
                 onClick={handleReject}
