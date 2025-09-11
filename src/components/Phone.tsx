@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay } from 'react-icons/tb';
+import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay, TbUsers, TbUserPlus } from 'react-icons/tb';
 import { SipService, CallState, SipConfig, CallInfo } from '@/services/sipService';
 
 interface PhoneProps {
@@ -17,6 +17,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [callDurations, setCallDurations] = useState<Map<string, number>>(new Map());
+  const [isConferenceMode, setIsConferenceMode] = useState(false);
   const [extension, setExtension] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showErrorAlert, setShowErrorAlert] = useState(false);
@@ -35,29 +36,36 @@ export default function Phone({ theme }: PhoneProps) {
       // Update active calls list
       setActiveCalls(service.getAllActiveCalls());
       
+      // Update conference mode state
+      setIsConferenceMode(service.isInConferenceMode());
+      
       // Handle per-call timers
       if (state.status === 'connected' && state.sessionId) {
         const sessionId = state.sessionId;
         
         // Start timer for this specific call if not already started
         if (!callTimers.current.has(sessionId)) {
-          const startTime = new Date();
+          // Get the call info to use the actual connected time
+          const callInfo = service.getCallInfo(sessionId);
+          const connectedTime = callInfo?.connectedTime || new Date();
           
           const timer = setInterval(() => {
             const now = new Date();
-            const elapsed = Math.floor((now.getTime() - startTime.getTime()) / 1000);
+            const elapsed = Math.floor((now.getTime() - connectedTime.getTime()) / 1000);
             setCallDurations(prev => new Map(prev.set(sessionId, elapsed)));
           }, 1000);
           
           callTimers.current.set(sessionId, timer);
-          console.log('Timer started for call:', sessionId);
+          console.log('Timer started for call:', sessionId, 'connected at:', connectedTime);
         }
       }
       
       // Legacy single call timer (kept for backward compatibility)
-      if (state.status === 'connected' && !callStartTime.current) {
-        callStartTime.current = new Date();
-        console.log('Call started at:', callStartTime.current);
+      if (state.status === 'connected' && !callStartTime.current && state.sessionId) {
+        // Use the actual connected time from CallInfo
+        const callInfo = service.getCallInfo(state.sessionId);
+        callStartTime.current = callInfo?.connectedTime || new Date();
+        console.log('Legacy timer - Call started at:', callStartTime.current);
         
         // Start the timer
         timerInterval.current = setInterval(() => {
@@ -82,31 +90,47 @@ export default function Phone({ theme }: PhoneProps) {
             callTimers.current.delete(state.sessionId);
           }
           
-          // Get final duration from per-call tracking
-          const finalDuration = callDurations.get(state.sessionId);
-          if (finalDuration) {
-            const minutes = Math.floor(finalDuration / 60);
-            const seconds = finalDuration % 60;
-            duration = minutes > 0 ? `${minutes}:${seconds.toString().padStart(2, '0')}` : `${seconds}s`;
-            
-            // Clean up duration tracking
-            setCallDurations(prev => {
-              const newMap = new Map(prev);
-              newMap.delete(state.sessionId!);
-              return newMap;
-            });
+          // Calculate final duration directly from connectedTime instead of timer value
+          const callInfo = service.getCallInfo(state.sessionId);
+          if (callInfo?.connectedTime) {
+            const endTime = new Date();
+            const durationMs = endTime.getTime() - callInfo.connectedTime.getTime();
+            const totalSeconds = Math.floor(durationMs / 1000);
+            duration = formatElapsedTime(totalSeconds);
+            console.log('Final duration calculated from connectedTime:', duration);
           }
+          
+          // Clean up duration tracking
+          setCallDurations(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(state.sessionId!);
+            return newMap;
+          });
         }
         
-        // Fallback to legacy timer if per-call timer not available
-        if (!duration && callStartTime.current) {
-          const endTime = new Date();
-          const durationMs = endTime.getTime() - callStartTime.current.getTime();
-          const seconds = Math.floor(durationMs / 1000);
-          const minutes = Math.floor(seconds / 60);
-          const remainingSeconds = seconds % 60;
-          duration = minutes > 0 ? `${minutes}:${remainingSeconds.toString().padStart(2, '0')}` : `${seconds}s`;
-          console.log('Call ended, duration:', duration);
+        // Fallback if no timer was running or no sessionId
+        if (!duration) {
+          if (state.sessionId) {
+            // Try to get duration from CallInfo connectedTime
+            const callInfo = service.getCallInfo(state.sessionId);
+            if (callInfo?.connectedTime) {
+              const endTime = new Date();
+              const durationMs = endTime.getTime() - callInfo.connectedTime.getTime();
+              const totalSeconds = Math.floor(durationMs / 1000);
+              duration = formatElapsedTime(totalSeconds);
+              console.log('Fallback: duration from connectedTime:', duration);
+            }
+          }
+          
+          // Ultimate fallback to legacy timer
+          if (!duration && callStartTime.current) {
+            const endTime = new Date();
+            const durationMs = endTime.getTime() - callStartTime.current.getTime();
+            const totalSeconds = Math.floor(durationMs / 1000);
+            duration = formatElapsedTime(totalSeconds);
+            console.log('Ultimate fallback: duration from legacy timer:', duration);
+          }
+          
           callStartTime.current = null;
         }
         
@@ -190,6 +214,8 @@ export default function Phone({ theme }: PhoneProps) {
   };
 
   const handleDigitClick = (digit: string | number) => {
+    // Enable audio on first user interaction
+    sipService.current.enableAudio();
     setPhoneNumber(prev => prev + digit);
   };
 
@@ -199,6 +225,9 @@ export default function Phone({ theme }: PhoneProps) {
 
   const handleCall = async () => {
     if (!phoneNumber.trim()) return;
+    
+    // Enable audio on user interaction
+    sipService.current.enableAudio();
     
     try {
       // Check if we're in a secure context (HTTPS)
@@ -239,7 +268,14 @@ export default function Phone({ theme }: PhoneProps) {
 
   const handleHangup = async () => {
     try {
-      await sipService.current.hangup();
+      // Get the session ID of the current call
+      const currentCall = activeCalls.find(call => !call.isOnHold) || activeCalls[0];
+      if (!currentCall) {
+        showError('No active call to end.');
+        return;
+      }
+
+      await sipService.current.endCall(currentCall.sessionId);
     } catch (error: any) {
       console.error('Failed to hangup:', error);
       showError('Failed to end call. Please try again.');
@@ -256,6 +292,9 @@ export default function Phone({ theme }: PhoneProps) {
   };
 
   const handleAnswer = async () => {
+    // Enable audio on user interaction
+    sipService.current.enableAudio();
+    
     try {
       // Check if we're in a secure context (HTTPS)
       if (!window.isSecureContext) {
@@ -294,10 +333,17 @@ export default function Phone({ theme }: PhoneProps) {
 
   const handleHold = async () => {
     try {
-      if (callState.isOnHold) {
-        await sipService.current.unholdCall();
+      // Get the session ID of the current call
+      const currentCall = activeCalls.find(call => !call.isOnHold) || activeCalls[0];
+      if (!currentCall) {
+        showError('No active call to hold/resume.');
+        return;
+      }
+
+      if (currentCall.isOnHold) {
+        await sipService.current.unholdCallBySessionId(currentCall.sessionId);
       } else {
-        await sipService.current.holdCall();
+        await sipService.current.holdCallBySessionId(currentCall.sessionId);
       }
     } catch (error: any) {
       console.error('Failed to toggle hold:', error);
@@ -393,10 +439,35 @@ export default function Phone({ theme }: PhoneProps) {
       {activeCalls.length > 0 && (
         <div className="card bg-base-100 shadow-xl max-w-2xl mx-auto mb-6">
           <div className="card-body">
-            <h3 className="card-title mb-4">Active Calls ({activeCalls.length})</h3>
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h3 className="card-title">Active Calls ({activeCalls.length})</h3>
+                {isConferenceMode && (
+                  <div className="text-sm text-info mt-1">
+                    Conference Mode • {sipService.current.getConferenceSize()} participants
+                  </div>
+                )}
+              </div>
+              {activeCalls.length > 1 && (
+                <button
+                  onClick={() => {
+                    if (isConferenceMode) {
+                      sipService.current.disableConferenceMode();
+                    } else {
+                      sipService.current.enableConferenceMode();
+                    }
+                  }}
+                  className={`btn btn-sm ${isConferenceMode ? 'btn-warning' : 'btn-success'}`}
+                  title={isConferenceMode ? 'Exit Conference (keep incoming call, disconnect outgoing calls)' : 'Start Conference'}
+                >
+                  {isConferenceMode ? 'Exit Conference' : 'Conference All'}
+                </button>
+              )}
+            </div>
             <div className="space-y-2">
               {activeCalls.map((call) => {
                 const elapsedTime = callDurations.get(call.sessionId) || 0;
+                const isInConference = sipService.current.isInConference(call.sessionId);
                 return (
                   <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
                     <div className="flex items-center space-x-3">
@@ -405,28 +476,55 @@ export default function Phone({ theme }: PhoneProps) {
                         <div className="font-semibold">{call.remoteNumber}</div>
                         <div className="text-sm opacity-70">
                           {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
+                          {isInConference && <span className="ml-2 badge badge-sm badge-info">Conference</span>}
                           {elapsedTime > 0 && <span className="ml-2 font-mono">({formatElapsedTime(elapsedTime)})</span>}
                         </div>
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      {call.isOnHold ? (
-                        <button
-                          onClick={() => sipService.current.unholdCallBySessionId(call.sessionId)}
-                          className="btn btn-sm btn-success"
-                          title="Resume call"
-                        >
-                          <TbPlayerPlay className="w-4 h-4" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
-                          className="btn btn-sm btn-warning"
-                          title="Hold call"
-                        >
-                          <TbPlayerPause className="w-4 h-4" />
-                        </button>
+                      {/* Conference participation controls */}
+                      {isConferenceMode && activeCalls.length > 1 && (
+                        isInConference ? (
+                          <button
+                            onClick={() => sipService.current.removeFromConference(call.sessionId)}
+                            className="btn btn-sm btn-outline btn-warning"
+                            title="Remove from conference"
+                          >
+                            <TbUsers className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => sipService.current.addToConference(call.sessionId)}
+                            className="btn btn-sm btn-outline btn-info"
+                            title={call.isOnHold ? "Add to conference (will resume call)" : "Add to conference"}
+                          >
+                            <TbUserPlus className="w-4 h-4" />
+                          </button>
+                        )
                       )}
+                      
+                      {/* Hold/Resume controls - only show when call is connected */}
+                      {call.status === 'connected' && (
+                        call.isOnHold ? (
+                          <button
+                            onClick={() => sipService.current.unholdCallBySessionId(call.sessionId)}
+                            className="btn btn-sm btn-success"
+                            title="Resume call"
+                          >
+                            <TbPlayerPlay className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
+                            className="btn btn-sm btn-warning"
+                            title="Hold call"
+                          >
+                            <TbPlayerPause className="w-4 h-4" />
+                          </button>
+                        )
+                      )}
+                      
+                      {/* End call control */}
                       <button
                         onClick={() => sipService.current.endCall(call.sessionId)}
                         className="btn btn-sm btn-error"

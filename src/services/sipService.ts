@@ -32,7 +32,9 @@ export interface CallInfo {
   remoteNumber: string;
   isOnHold: boolean;
   direction: 'incoming' | 'outgoing';
+  status: 'connecting' | 'ringing' | 'connected';
   startTime?: Date;
+  connectedTime?: Date;
 }
 
 export class SipService {
@@ -41,6 +43,9 @@ export class SipService {
   private sessions: Map<string, any> = new Map(); // sessionId -> session
   private callInfos: Map<string, CallInfo> = new Map(); // sessionId -> call info
   private activeSessionId?: string; // Currently active session
+  private isConferenceMode: boolean = false; // Whether multiple calls are in conference
+  private conferenceParticipants: Set<string> = new Set(); // Session IDs in conference
+  private conferenceMixer?: GainNode; // Audio mixer for conference
   private config?: SipConfig;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
@@ -105,6 +110,20 @@ export class SipService {
       }
     }
 
+    // Update the CallInfo status to match
+    if (finalStatus === 'connecting') {
+      callInfo.status = 'connecting';
+    } else if (finalStatus === 'connected') {
+      callInfo.status = 'connected';
+      // Set connected time when call first becomes connected
+      if (!callInfo.connectedTime) {
+        callInfo.connectedTime = new Date();
+        console.log('Call connected at:', callInfo.connectedTime, 'for session:', targetSessionId);
+      }
+    } else if (finalStatus === 'ringing') {
+      callInfo.status = 'ringing';
+    }
+
     this.onCallStateChanged?.({
       status: finalStatus,
       remoteNumber: callInfo.remoteNumber,
@@ -162,6 +181,25 @@ export class SipService {
   private setupAudioContext() {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    
+    // Resume AudioContext if it's suspended (required by browsers for auto-play)
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume().then(() => {
+        console.log('SIP.js: AudioContext resumed successfully');
+      }).catch(error => {
+        console.warn('SIP.js: Failed to resume AudioContext:', error);
+      });
+    }
+  }
+
+  // Method to ensure audio context is ready for user-initiated actions
+  enableAudio() {
+    this.setupAudioContext();
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      this.audioContext.resume().catch(error => {
+        console.warn('SIP.js: Failed to enable audio:', error);
+      });
     }
   }
 
@@ -246,49 +284,62 @@ export class SipService {
 
   private generateRingtone() {
     try {
+      console.log('SIP.js: Starting ringtone generation');
       this.setupAudioContext();
-      if (!this.audioContext) return;
+      if (!this.audioContext) {
+        console.error('SIP.js: AudioContext not available for ringtone');
+        return;
+      }
+      
+      console.log('SIP.js: AudioContext state:', this.audioContext.state);
 
       // Stop any existing ringtone
       this.stopRingtone();
 
-      // Create ringtone pattern (440Hz + 480Hz, 2s on, 4s off)
-      const playRing = () => {
+      // Create distinctive double-ring pattern for incoming calls
+      const playDoubleRing = () => {
         if (!this.audioContext) return;
         
-        const oscillator1 = this.audioContext.createOscillator();
-        const oscillator2 = this.audioContext.createOscillator();
-        const gainNode = this.audioContext.createGain();
-
-        // Incoming ringtone: 440Hz + 480Hz (traditional phone ring)
-        oscillator1.frequency.setValueAtTime(440, this.audioContext.currentTime);
-        oscillator2.frequency.setValueAtTime(480, this.audioContext.currentTime);
+        const audioCtx = this.audioContext; // Capture context reference
         
-        gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime); // Moderate volume
+        // First ring burst
+        const createRingBurst = (delay: number) => {
+          const oscillator1 = audioCtx.createOscillator();
+          const oscillator2 = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
 
-        oscillator1.connect(gainNode);
-        oscillator2.connect(gainNode);
-        gainNode.connect(this.audioContext.destination);
+          // Incoming ringtone: 523Hz + 659Hz (higher pitched, more urgent)
+          oscillator1.frequency.setValueAtTime(523, audioCtx.currentTime); // C5
+          oscillator2.frequency.setValueAtTime(659, audioCtx.currentTime); // E5
+          
+          // Create envelope for ring burst
+          gainNode.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+          gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + delay + 0.01);
+          gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime + delay + 0.4);
+          gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + delay + 0.5);
 
-        oscillator1.start();
-        oscillator2.start();
+          oscillator1.connect(gainNode);
+          oscillator2.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
 
-        // Stop after 2 seconds
-        setTimeout(() => {
-          try {
-            oscillator1.stop();
-            oscillator2.stop();
-          } catch (error) {
-            // Already stopped
-          }
-        }, 2000);
+          oscillator1.start(audioCtx.currentTime + delay);
+          oscillator2.start(audioCtx.currentTime + delay);
+          
+          oscillator1.stop(audioCtx.currentTime + delay + 0.5);
+          oscillator2.stop(audioCtx.currentTime + delay + 0.5);
+        };
+        
+        // Create double ring pattern: ring-ring-silence
+        createRingBurst(0);      // First ring at 0ms
+        createRingBurst(0.7);    // Second ring at 700ms
+        // Total pattern duration: 1.2s, then 2.8s silence
       };
 
-      // Play initial ring
-      playRing();
+      // Play initial double ring
+      playDoubleRing();
 
-      // Set up interval for repeated ringing (every 6 seconds: 2s ring + 4s silence)
-      this.ringtoneInterval = setInterval(playRing, 6000);
+      // Set up interval for repeated double-ring pattern (every 4 seconds)
+      this.ringtoneInterval = setInterval(playDoubleRing, 4000);
 
       console.log('Ringtone started');
     } catch (error) {
@@ -394,14 +445,27 @@ export class SipService {
   }
 
   private muteAllInactiveCalls() {
-    // Mute all calls except the active one
-    for (const [sessionId, audio] of this.sessionAudioElements.entries()) {
-      const callInfo = this.callInfos.get(sessionId);
-      if (callInfo) {
-        // Mute if: not active session OR call is on hold
-        const shouldMute = sessionId !== this.activeSessionId || callInfo.isOnHold;
-        audio.muted = shouldMute;
-        console.log(`Audio ${shouldMute ? 'muted' : 'unmuted'} for session ${sessionId} (active: ${sessionId === this.activeSessionId}, onHold: ${callInfo.isOnHold})`);
+    if (this.isConferenceMode) {
+      // In conference mode, unmute all non-held calls
+      for (const [sessionId, audio] of this.sessionAudioElements.entries()) {
+        const callInfo = this.callInfos.get(sessionId);
+        if (callInfo) {
+          // Only mute if call is explicitly on hold
+          const shouldMute = callInfo.isOnHold;
+          audio.muted = shouldMute;
+          console.log(`Conference mode: Audio ${shouldMute ? 'muted' : 'unmuted'} for session ${sessionId} (onHold: ${callInfo.isOnHold})`);
+        }
+      }
+    } else {
+      // Normal mode: mute all calls except the active one
+      for (const [sessionId, audio] of this.sessionAudioElements.entries()) {
+        const callInfo = this.callInfos.get(sessionId);
+        if (callInfo) {
+          // Mute if: not active session OR call is on hold
+          const shouldMute = sessionId !== this.activeSessionId || callInfo.isOnHold;
+          audio.muted = shouldMute;
+          console.log(`Normal mode: Audio ${shouldMute ? 'muted' : 'unmuted'} for session ${sessionId} (active: ${sessionId === this.activeSessionId}, onHold: ${callInfo.isOnHold})`);
+        }
       }
     }
   }
@@ -540,6 +604,7 @@ export class SipService {
       remoteNumber: remoteUser,
       isOnHold: false,
       direction: 'incoming',
+      status: 'ringing',
       startTime: new Date()
     });
     
@@ -562,6 +627,7 @@ export class SipService {
           this.updateCallState(sessionId, 'connected');
           break;
         case SessionState.Terminated:
+          this.stopRingtone(); // Stop ringtone if call was declined/terminated
           this.cleanupAudioForSession(sessionId);
           
           // Send terminated callback with call info before cleanup
@@ -653,6 +719,7 @@ export class SipService {
         remoteNumber: number,
         isOnHold: false,
         direction: 'outgoing',
+        status: 'connecting',
         startTime: new Date()
       });
 
@@ -828,6 +895,10 @@ export class SipService {
   }
 
   async hangup(): Promise<void> {
+    // Stop ringtone and ringback when hanging up
+    this.stopRingtone();
+    this.stopRingbackTone();
+    
     const activeSession = this.getActiveSession();
     if (activeSession) {
       try {
@@ -857,6 +928,9 @@ export class SipService {
   }
 
   async rejectCall(): Promise<void> {
+    // Stop ringtone immediately when rejecting
+    this.stopRingtone();
+    
     const activeSession = this.getActiveSession();
     if (activeSession) {
       try {
@@ -994,10 +1068,12 @@ export class SipService {
     
     if (session && session.state === SessionState.Established && callInfo && callInfo.isOnHold) {
       try {
-        // Hold all other calls first
-        for (const [otherSessionId, otherCallInfo] of this.callInfos.entries()) {
-          if (otherSessionId !== sessionId && !otherCallInfo.isOnHold) {
-            await this.holdCallBySessionId(otherSessionId);
+        // Hold all other calls first (only in normal mode, not in conference mode)
+        if (!this.isConferenceMode) {
+          for (const [otherSessionId, otherCallInfo] of this.callInfos.entries()) {
+            if (otherSessionId !== sessionId && !otherCallInfo.isOnHold) {
+              await this.holdCallBySessionId(otherSessionId);
+            }
           }
         }
         
@@ -1028,6 +1104,210 @@ export class SipService {
     } else {
       throw new Error('Call not found or not on hold');
     }
+  }
+
+  enableConferenceMode(): void {
+    this.isConferenceMode = true;
+    
+    // Add ALL calls to conference and resume held calls
+    const allCalls = this.getCallInfosArray();
+    allCalls.forEach(call => {
+      this.conferenceParticipants.add(call.sessionId);
+      
+      // If call is on hold, resume it for conference
+      if (call.isOnHold) {
+        try {
+          this.unholdCallBySessionId(call.sessionId);
+          console.log('Resumed held call for conference:', call.sessionId);
+        } catch (error) {
+          console.error('Failed to resume held call for conference:', call.sessionId, error);
+        }
+      }
+    });
+    
+    // Setup conference audio mixing
+    this.setupConferenceMixer();
+    
+    // Unmute all conference participants
+    this.muteAllInactiveCalls();
+    console.log('Conference started with participants (including resumed held calls):', Array.from(this.conferenceParticipants));
+    this.updateCallState();
+  }
+
+  disableConferenceMode(): void {
+    this.isConferenceMode = false;
+    
+    // Smart conference exit: prioritize incoming calls, disconnect outgoing calls
+    const allCalls = this.getCallInfosArray();
+    const incomingCalls = allCalls.filter(call => call.direction === 'incoming');
+    const outgoingCalls = allCalls.filter(call => call.direction === 'outgoing');
+    
+    // If there are incoming calls, keep the first one active and disconnect outgoing calls
+    if (incomingCalls.length > 0 && outgoingCalls.length > 0) {
+      const primaryCall = incomingCalls[0]; // Prioritize first incoming call
+      
+      // Disconnect all outgoing calls
+      outgoingCalls.forEach(call => {
+        console.log('Disconnecting outgoing call on conference exit:', call.sessionId);
+        this.endCall(call.sessionId);
+      });
+      
+      // Ensure the primary incoming call is active (not on hold)
+      if (primaryCall.isOnHold) {
+        try {
+          this.unholdCallBySessionId(primaryCall.sessionId);
+          console.log('Resumed primary incoming call on conference exit:', primaryCall.sessionId);
+        } catch (error) {
+          console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
+        }
+      }
+      
+      // Set the primary call as active
+      this.activeSessionId = primaryCall.sessionId;
+      
+    } else if (allCalls.length > 1) {
+      // If no incoming calls or mixed scenario, keep the first call and disconnect others
+      const primaryCall = allCalls[0];
+      const otherCalls = allCalls.slice(1);
+      
+      otherCalls.forEach(call => {
+        console.log('Disconnecting secondary call on conference exit:', call.sessionId);
+        this.endCall(call.sessionId);
+      });
+      
+      // Ensure the primary call is active
+      if (primaryCall.isOnHold) {
+        try {
+          this.unholdCallBySessionId(primaryCall.sessionId);
+          console.log('Resumed primary call on conference exit:', primaryCall.sessionId);
+        } catch (error) {
+          console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
+        }
+      }
+      
+      this.activeSessionId = primaryCall.sessionId;
+    }
+    
+    // Clear conference participants
+    this.conferenceParticipants.clear();
+    
+    // Cleanup conference mixer
+    this.cleanupConferenceMixer();
+    
+    // Revert to normal mode - only active call unmuted
+    this.muteAllInactiveCalls();
+    console.log('Conference ended with smart call management');
+    this.updateCallState();
+  }
+
+  private setupConferenceMixer(): void {
+    try {
+      this.setupAudioContext();
+      if (!this.audioContext) return;
+
+      // Create conference mixer
+      this.conferenceMixer = this.audioContext.createGain();
+      this.conferenceMixer.gain.setValueAtTime(1.0, this.audioContext.currentTime);
+      this.conferenceMixer.connect(this.audioContext.destination);
+
+      console.log('Conference mixer setup complete');
+    } catch (error) {
+      console.error('Failed to setup conference mixer:', error);
+    }
+  }
+
+  private cleanupConferenceMixer(): void {
+    if (this.conferenceMixer) {
+      try {
+        this.conferenceMixer.disconnect();
+        this.conferenceMixer = undefined;
+        console.log('Conference mixer cleaned up');
+      } catch (error) {
+        console.error('Error cleaning up conference mixer:', error);
+      }
+    }
+  }
+
+  addToConference(sessionId: string): boolean {
+    if (!this.sessions.has(sessionId)) {
+      console.warn('Cannot add non-existent session to conference:', sessionId);
+      return false;
+    }
+
+    if (this.conferenceParticipants.has(sessionId)) {
+      console.warn('Session already in conference:', sessionId);
+      return false;
+    }
+
+    // Add to conference
+    this.conferenceParticipants.add(sessionId);
+    
+    // Enable conference mode if not already enabled
+    if (!this.isConferenceMode) {
+      this.isConferenceMode = true;
+      this.setupConferenceMixer();
+    }
+
+    // Resume call if it was on hold and unmute the participant
+    const callInfo = this.callInfos.get(sessionId);
+    if (callInfo) {
+      if (callInfo.isOnHold) {
+        try {
+          this.unholdCallBySessionId(sessionId);
+          console.log('Resumed held call for conference addition:', sessionId);
+        } catch (error) {
+          console.error('Failed to resume held call for conference addition:', sessionId, error);
+        }
+      }
+      callInfo.isOnHold = false;
+      this.setAudioForSession(sessionId, false);
+    }
+
+    console.log('Added to conference:', sessionId);
+    this.updateCallState();
+    return true;
+  }
+
+  removeFromConference(sessionId: string): boolean {
+    if (!this.conferenceParticipants.has(sessionId)) {
+      console.warn('Session not in conference:', sessionId);
+      return false;
+    }
+
+    // Remove from conference
+    this.conferenceParticipants.delete(sessionId);
+    
+    // Mute the participant
+    this.setAudioForSession(sessionId, true);
+
+    // If no participants left, disable conference mode
+    if (this.conferenceParticipants.size === 0) {
+      this.disableConferenceMode();
+    }
+
+    console.log('Removed from conference:', sessionId);
+    this.updateCallState();
+    return true;
+  }
+
+  isInConference(sessionId: string): boolean {
+    return this.conferenceParticipants.has(sessionId);
+  }
+
+  getConferenceParticipants(): string[] {
+    return Array.from(this.conferenceParticipants);
+  }
+
+  getConferenceSize(): number {
+    return this.conferenceParticipants.size;
+  }
+
+  isInConferenceMode(): boolean {
+    return this.isConferenceMode;
+  }
+
+  getActiveCalls(): CallInfo[] {
+    return this.getCallInfosArray().filter(call => !call.isOnHold);
   }
 
   async disconnect(): Promise<void> {
