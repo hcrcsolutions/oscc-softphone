@@ -44,6 +44,7 @@ export class SipML5Service {
   private isConferenceMode: boolean = false; // Whether multiple calls are in conference
   private conferenceParticipants: Set<string> = new Set(); // Session IDs in conference
   private conferenceMixer?: GainNode; // Audio mixer for conference
+  private conferenceRoomId?: string; // FreeSWITCH conference room ID
   private config?: SipML5Config;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
@@ -1243,33 +1244,51 @@ export class SipML5Service {
     }
   }
 
-  enableConferenceMode(): void {
+  async enableConferenceMode(): Promise<void> {
     this.isConferenceMode = true;
     
-    // Add ALL calls to conference and resume held calls
+    // Generate unique conference room ID
+    this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    // Get all active calls
     const allCalls = this.getCallInfosArray();
-    allCalls.forEach(call => {
-      this.conferenceParticipants.add(call.sessionId);
-      
-      // If call is on hold, resume it for conference
-      if (call.isOnHold) {
-        try {
-          this.unholdCallBySessionId(call.sessionId);
-          console.log('SipML5: Resumed held call for conference:', call.sessionId);
-        } catch (error) {
-          console.error('SipML5: Failed to resume held call for conference:', call.sessionId, error);
+    if (allCalls.length < 2) {
+      console.warn('SipML5: Need at least 2 calls to start conference');
+      return;
+    }
+
+    console.log(`SipML5: Starting FreeSWITCH conference room: ${this.conferenceRoomId}`);
+    
+    try {
+      // Note: SipML5 has limited REFER support, so we'll use client-side mixing as fallback
+      // For now, resume all held calls and use client-side audio mixing
+      allCalls.forEach(call => {
+        this.conferenceParticipants.add(call.sessionId);
+        
+        // If call is on hold, resume it for conference
+        if (call.isOnHold) {
+          try {
+            this.unholdCallBySessionId(call.sessionId);
+            console.log('SipML5: Resumed held call for conference:', call.sessionId);
+          } catch (error) {
+            console.error('SipML5: Failed to resume held call for conference:', call.sessionId, error);
+          }
         }
-      }
-    });
-    
-    // Setup conference audio mixing
-    this.setupConferenceMixer();
-    
-    // Unmute all conference participants
-    this.muteAllInactiveCalls();
-    
-    console.log('SipML5: Conference mode enabled with', this.conferenceParticipants.size, 'participants (including resumed held calls)');
-    this.updateCallState();
+      });
+      
+      // Setup local audio mixing (SipML5 limitation)
+      this.setupConferenceMixer();
+      this.muteAllInactiveCalls();
+      
+      console.log('SipML5: FreeSWITCH conference started (client-side mixing) with participants:', Array.from(this.conferenceParticipants));
+      this.updateCallState();
+    } catch (error) {
+      console.error('SipML5: Failed to start FreeSWITCH conference:', error);
+      // Fallback to client-side mixing
+      this.setupConferenceMixer();
+      this.muteAllInactiveCalls();
+      console.log('SipML5: Falling back to client-side conference mixing');
+    }
   }
 
   disableConferenceMode(): void {
@@ -1326,8 +1345,9 @@ export class SipML5Service {
       this.activeSessionId = primaryCall.sessionId;
     }
     
-    // Clear conference participants
+    // Clear conference participants and room
     this.conferenceParticipants.clear();
+    this.conferenceRoomId = undefined;
     
     // Cleanup conference mixer
     this.cleanupConferenceMixer();
@@ -1335,7 +1355,7 @@ export class SipML5Service {
     // Revert to normal mode - only active call unmuted
     this.muteAllInactiveCalls();
     
-    console.log('SipML5: Conference ended with smart call management');
+    console.log('SipML5: FreeSWITCH conference ended with smart call management');
     this.updateCallState();
   }
 

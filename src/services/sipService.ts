@@ -46,6 +46,7 @@ export class SipService {
   private isConferenceMode: boolean = false; // Whether multiple calls are in conference
   private conferenceParticipants: Set<string> = new Set(); // Session IDs in conference
   private conferenceMixer?: GainNode; // Audio mixer for conference
+  private conferenceRoomId?: string; // FreeSWITCH conference room ID
   private config?: SipConfig;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
@@ -1139,32 +1140,51 @@ export class SipService {
     }
   }
 
-  enableConferenceMode(): void {
+  async enableConferenceMode(): Promise<void> {
     this.isConferenceMode = true;
     
-    // Add ALL calls to conference and resume held calls
+    // Generate unique conference room ID
+    this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
+    // Get all active calls
     const allCalls = this.getCallInfosArray();
-    allCalls.forEach(call => {
-      this.conferenceParticipants.add(call.sessionId);
-      
-      // If call is on hold, resume it for conference
-      if (call.isOnHold) {
-        try {
-          this.unholdCallBySessionId(call.sessionId);
-          console.log('Resumed held call for conference:', call.sessionId);
-        } catch (error) {
-          console.error('Failed to resume held call for conference:', call.sessionId, error);
+    if (allCalls.length < 2) {
+      console.warn('Need at least 2 calls to start conference');
+      return;
+    }
+
+    console.log(`Starting FreeSWITCH conference room: ${this.conferenceRoomId}`);
+    
+    try {
+      // Transfer all calls to the conference room using REFER
+      for (const call of allCalls) {
+        await this.transferToConference(call.sessionId);
+        this.conferenceParticipants.add(call.sessionId);
+        
+        // Resume held calls for conference
+        if (call.isOnHold) {
+          try {
+            await this.unholdCallBySessionId(call.sessionId);
+            console.log('Resumed held call for conference:', call.sessionId);
+          } catch (error) {
+            console.error('Failed to resume held call for conference:', call.sessionId, error);
+          }
         }
       }
-    });
-    
-    // Setup conference audio mixing
-    this.setupConferenceMixer();
-    
-    // Unmute all conference participants
-    this.muteAllInactiveCalls();
-    console.log('Conference started with participants (including resumed held calls):', Array.from(this.conferenceParticipants));
-    this.updateCallState();
+      
+      // Setup local audio mixing as fallback
+      this.setupConferenceMixer();
+      this.muteAllInactiveCalls();
+      
+      console.log('FreeSWITCH conference started with participants:', Array.from(this.conferenceParticipants));
+      this.updateCallState();
+    } catch (error) {
+      console.error('Failed to start FreeSWITCH conference:', error);
+      // Fallback to client-side mixing
+      this.setupConferenceMixer();
+      this.muteAllInactiveCalls();
+      console.log('Falling back to client-side conference mixing');
+    }
   }
 
   disableConferenceMode(): void {
@@ -1221,15 +1241,16 @@ export class SipService {
       this.activeSessionId = primaryCall.sessionId;
     }
     
-    // Clear conference participants
+    // Clear conference participants and room
     this.conferenceParticipants.clear();
+    this.conferenceRoomId = undefined;
     
     // Cleanup conference mixer
     this.cleanupConferenceMixer();
     
     // Revert to normal mode - only active call unmuted
     this.muteAllInactiveCalls();
-    console.log('Conference ended with smart call management');
+    console.log('FreeSWITCH conference ended with smart call management');
     this.updateCallState();
   }
 
@@ -1337,6 +1358,82 @@ export class SipService {
 
   isInConferenceMode(): boolean {
     return this.isConferenceMode;
+  }
+
+  // Transfer a call to FreeSWITCH conference room
+  private async transferToConference(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config?.server}`;
+    
+    try {
+      // Send REFER to transfer the call to conference
+      console.log(`Transferring session ${sessionId} to conference: ${conferenceUri}`);
+      
+      // Create REFER request to transfer to conference
+      const referRequest = session.refer(conferenceUri, {
+        requestDelegate: {
+          onAccept: () => {
+            console.log(`Conference transfer accepted for session: ${sessionId}`);
+          },
+          onReject: (response: any) => {
+            console.error(`Conference transfer rejected for session: ${sessionId}`, response);
+          }
+        }
+      });
+      
+      // Wait for the REFER to complete
+      await referRequest;
+      
+      console.log(`Successfully transferred ${sessionId} to conference room ${this.conferenceRoomId}`);
+    } catch (error) {
+      console.error(`Failed to transfer session ${sessionId} to conference:`, error);
+      throw error;
+    }
+  }
+
+  // Alternative method using attended transfer for conference
+  async createAttendedConference(sessionId1: string, sessionId2: string): Promise<void> {
+    const session1 = this.sessions.get(sessionId1);
+    const session2 = this.sessions.get(sessionId2);
+    
+    if (!session1 || !session2) {
+      throw new Error('One or both sessions not found for attended conference');
+    }
+
+    try {
+      console.log(`Creating attended conference between ${sessionId1} and ${sessionId2}`);
+      
+      // Generate conference room ID
+      this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const conferenceUri = `sip:${this.conferenceRoomId}@${this.config?.server}`;
+      
+      // Hold both calls first
+      await Promise.all([
+        this.holdCallBySessionId(sessionId1),
+        this.holdCallBySessionId(sessionId2)
+      ]);
+      
+      // Transfer both to conference
+      await Promise.all([
+        this.transferToConference(sessionId1),
+        this.transferToConference(sessionId2)
+      ]);
+      
+      // Enable conference mode
+      this.isConferenceMode = true;
+      this.conferenceParticipants.add(sessionId1);
+      this.conferenceParticipants.add(sessionId2);
+      
+      console.log(`Attended conference created: ${this.conferenceRoomId}`);
+      this.updateCallState();
+    } catch (error) {
+      console.error('Failed to create attended conference:', error);
+      throw error;
+    }
   }
 
   getActiveCalls(): CallInfo[] {

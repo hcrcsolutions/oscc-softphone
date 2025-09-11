@@ -492,11 +492,16 @@ export default function Phone({ theme }: PhoneProps) {
               </div>
               {activeCalls.length > 1 && (
                 <button
-                  onClick={() => {
-                    if (isConferenceMode) {
-                      sipService.current.disableConferenceMode();
-                    } else {
-                      sipService.current.enableConferenceMode();
+                  onClick={async () => {
+                    try {
+                      if (isConferenceMode) {
+                        await sipService.current.disableConferenceMode();
+                      } else {
+                        await sipService.current.enableConferenceMode();
+                      }
+                    } catch (error) {
+                      console.error('Conference operation failed:', error);
+                      showError('Failed to manage conference. Please try again.');
                     }
                   }}
                   className={`btn btn-sm ${isConferenceMode ? 'btn-warning' : 'btn-success'}`}
