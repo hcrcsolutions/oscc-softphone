@@ -204,7 +204,13 @@ export default function Phone2({ theme }: Phone2Props) {
           
           // Only configure if we have a password
           if (config.password && config.password.trim() !== '') {
+            console.log('Phone2: Auto-connecting to SIP server via SipML5...');
+            
+            // Initialize audio context early
+            service.enableAudio();
+            
             await service.configure(config);
+            console.log('Phone2: SipML5 auto-connection successful');
           } else {
             console.warn('Phone2: No password configured for SipML5, skipping connection');
           }

@@ -935,20 +935,32 @@ export class SipML5Service {
         this.stopRingbackTone();
         this.stopRingtone();
         
+        // Check if session is already connected
+        if (activeSession.isConnected && activeSession.isConnected()) {
+          console.log('SipML5: Session already connected');
+          return;
+        }
+        
         // Try immediate accept first
         let result = activeSession.accept({
           audio_remote: remoteAudio
         });
         
-        // If immediate accept failed, wait briefly and retry
-        if (result !== 0 && result === -1 && activeSession.isConnecting && activeSession.isConnecting()) {
-          console.log('SipML5: Immediate accept failed, session connecting, waiting briefly...');
+        // If immediate accept succeeded, we're done
+        if (result === 0) {
+          console.log('SipML5: Call answered successfully');
+          return;
+        }
+        
+        // If immediate accept failed and session is connecting, wait briefly and retry
+        if (result !== 0 && activeSession.isConnecting && activeSession.isConnecting()) {
+          console.log('SipML5: Session is connecting, waiting briefly...');
           
           let attempts = 0;
-          const maxAttempts = 3; // Reduced attempts
+          const maxAttempts = 5; // Allow more attempts
           
-          while (activeSession.isConnecting && activeSession.isConnecting() && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
+          while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 100)); // Fixed 100ms wait
             attempts++;
             console.log(`SipML5: Retry attempt ${attempts}`);
             

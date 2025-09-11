@@ -817,49 +817,54 @@ export class SipService {
         this.stopRingbackTone();
         this.stopRingtone();
         
-        // Try immediate accept first, only wait if it fails
-        try {
-          await activeSession.accept();
-          return; // Success, exit early
-        } catch (immediateError: any) {
-          if (!immediateError.message?.includes('Invalid session state')) {
-            throw immediateError; // If it's not a state error, rethrow
-          }
-          console.log('Immediate accept failed due to state, will wait and retry...');
+        // Check the current session state
+        const currentState = activeSession.state;
+        console.log('Answering call, current state:', currentState);
+        
+        // If session is already establishing or established, don't try to accept again
+        if (currentState === SessionState.Established) {
+          console.log('Session already established');
+          return;
         }
         
-        // If immediate accept failed due to state, wait a bit
-        if (activeSession.state === SessionState.Establishing) {
-          console.log('Session is establishing, waiting briefly...');
+        // If session is in Establishing state, wait for it to be ready
+        if (currentState === SessionState.Establishing) {
+          console.log('Session is establishing, waiting for Initial state...');
           
-          // Much shorter wait with linear progression
           let attempts = 0;
-          const maxAttempts = 3; // Further reduced
+          const maxAttempts = 10; // Allow more attempts
           
-          while (activeSession.state === SessionState.Establishing && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 30 + (attempts * 20))); // 30ms, 50ms, 70ms
+          while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 100)); // Wait 100ms between checks
             attempts++;
-            console.log(`Attempt ${attempts}: Session state is ${activeSession.state}`);
+            
+            const newState = activeSession.state;
+            console.log(`Attempt ${attempts}: Session state is ${newState}`);
             
             // Check if session was terminated while waiting
-            if (activeSession.state === SessionState.Terminated) {
+            if (newState === SessionState.Terminated) {
               throw new Error('Call was terminated before it could be answered');
             }
             
-            // Try accepting after each wait
-            try {
+            // If state changed to established, we're done
+            if (newState === SessionState.Established) {
+              console.log('Session became established while waiting');
+              return;
+            }
+            
+            // If state is Initial, try to accept
+            if (newState === SessionState.Initial) {
+              console.log('Session is ready to accept');
               await activeSession.accept();
-              return; // Success, exit
-            } catch (retryError: any) {
-              if (attempts === maxAttempts || !retryError.message?.includes('Invalid session state')) {
-                throw retryError;
-              }
-              console.log(`Retry ${attempts} failed, continuing...`);
+              return;
             }
           }
+          
+          // If we're still in Establishing after all attempts, try to accept anyway
+          console.warn('Session still establishing after waiting, attempting accept anyway');
         }
         
-        // Final attempt
+        // Try to accept the session
         await activeSession.accept();
       } catch (error: any) {
         console.error('Failed to answer call:', error);

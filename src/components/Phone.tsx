@@ -180,20 +180,33 @@ export default function Phone({ theme }: PhoneProps) {
 
     service.setRegistrationStateCallback(setIsRegistered);
 
-    // Load SIP configuration from localStorage
-    const savedConfig = localStorage.getItem('sipConfig');
-    if (savedConfig) {
-      try {
-        const config: SipConfig = JSON.parse(savedConfig);
-        setExtension(config.username);
-        service.configure(config).catch((error) => {
-          console.error('Failed to configure SIP:', error);
+    // Auto-connect to SIP on application load
+    const autoConnect = async () => {
+      const savedConfig = localStorage.getItem('sipConfig');
+      if (savedConfig) {
+        try {
+          const config: SipConfig = JSON.parse(savedConfig);
+          setExtension(config.username);
+          
+          console.log('Auto-connecting to SIP server...');
+          
+          // Initialize audio context early (requires user interaction in some browsers)
+          service.enableAudio();
+          
+          // Configure and connect
+          await service.configure(config);
+          console.log('SIP auto-connection successful');
+        } catch (error) {
+          console.error('Failed to auto-connect to SIP:', error);
           showError('Failed to connect to phone system. Please check your settings.');
-        });
-      } catch (error) {
-        console.error('Failed to load SIP configuration:', error);
+        }
+      } else {
+        console.log('No saved SIP configuration found');
       }
-    }
+    };
+    
+    // Initiate auto-connection
+    autoConnect();
 
     return () => {
       service.disconnect();
