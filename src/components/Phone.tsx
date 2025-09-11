@@ -516,7 +516,7 @@ export default function Phone({ theme }: PhoneProps) {
                         ) : (
                           <button
                             onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
-                            className="btn btn-sm btn-warning"
+                            className="btn btn-sm btn-info"
                             title="Hold call"
                           >
                             <TbPlayerPause className="w-4 h-4" />
@@ -609,7 +609,7 @@ export default function Phone({ theme }: PhoneProps) {
               {callState.status === 'connected' && (
                 <button 
                   onClick={handleHold}
-                  className={`btn flex-1 ${callState.isOnHold ? 'btn-warning' : 'btn-info'}`}
+                  className={`btn flex-1 ${callState.isOnHold ? 'btn-success' : 'btn-info'}`}
                 >
                   {callState.isOnHold ? (
                     <>
