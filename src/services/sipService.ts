@@ -369,6 +369,7 @@ export class SipService {
     }
   }
 
+
   private setupAudioStreams(session: any, sessionId: string) {
     try {
       console.log('Setting up audio streams for session:', sessionId);
@@ -932,7 +933,7 @@ export class SipService {
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
           // Mute the audio for this held call
           this.setAudioForSession(activeCallInfo.sessionId, true);
-          console.log('Call placed on hold');
+          console.log('Call placed on hold (FreeSWITCH will handle hold music)');
         }
       } catch (error: any) {
         console.error('Failed to hold call:', error);
@@ -962,6 +963,7 @@ export class SipService {
           // Update call info
           activeCallInfo.isOnHold = false;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
+          
           // Manage audio: unmute this call and mute all others
           this.muteAllInactiveCalls();
           console.log('Call resumed from hold');
@@ -980,27 +982,114 @@ export class SipService {
     const callInfo = this.callInfos.get(sessionId);
     if (session && session.state === SessionState.Established && callInfo && !callInfo.isOnHold) {
       try {
-        // Mute the microphone to hold call
-        const pc = session.sessionDescriptionHandler?.peerConnection;
-        if (pc) {
-          const senders = pc.getSenders();
-          senders.forEach((sender: RTCRtpSender) => {
-            if (sender.track && sender.track.kind === 'audio') {
-              sender.track.enabled = false;
+        // Use SIP.js built-in hold if available, or modify SDP for proper SIP hold
+        const sessionDescriptionHandler = session.sessionDescriptionHandler;
+        if (sessionDescriptionHandler) {
+          const pc = sessionDescriptionHandler.peerConnection;
+          if (pc) {
+            // Wait for signaling state to stabilize before attempting hold
+            const waitForStableState = async (maxWaitMs: number = 1000): Promise<boolean> => {
+              const startTime = Date.now();
+              while (pc.signalingState !== 'stable' && (Date.now() - startTime) < maxWaitMs) {
+                console.log(`Waiting for stable signaling state, current: ${pc.signalingState}`);
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
+              return pc.signalingState === 'stable';
+            };
+
+            const isStable = await waitForStableState();
+            if (isStable) {
+              try {
+                // Double-check signaling state before proceeding
+                if (pc.signalingState !== 'stable') {
+                  throw new Error(`Signaling state changed to ${pc.signalingState} before creating offer`);
+                }
+                
+                // Get current remote description
+                const remoteDesc = pc.remoteDescription;
+                if (remoteDesc) {
+                  console.log(`Creating hold offer with signaling state: ${pc.signalingState}`);
+                  // Create a new offer with current tracks
+                  const offer = await pc.createOffer();
+                  
+                  // Modify SDP to indicate hold (sendonly)
+                  if (offer.sdp) {
+                    offer.sdp = offer.sdp.replace(/a=sendrecv/g, 'a=sendonly');
+                    offer.sdp = offer.sdp.replace(/a=recvonly/g, 'a=inactive');
+                  }
+                  
+                  // Set local description
+                  await pc.setLocalDescription(offer);
+                  
+                  // Send re-INVITE similar to Linphone - target mod_sofia with hold headers
+                  if (typeof (session as any).invite === 'function') {
+                    // Send re-INVITE with Linphone-style headers and SDP
+                    await (session as any).invite({
+                      requestDelegate: {
+                        onAccept: () => console.log('Hold re-INVITE accepted'),
+                        onReject: () => console.warn('Hold re-INVITE rejected')
+                      },
+                      requestOptions: {
+                        extraHeaders: [
+                          'Subject: Call on hold',
+                          'Supported: replaces, outbound, gruu, path, record-aware',
+                          'Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, NOTIFY, MESSAGE, SUBSCRIBE, INFO, PRACK, UPDATE'
+                        ]
+                      }
+                    });
+                    console.log('✅ Sent Linphone-style SIP hold (re-INVITE with Subject: Call on hold) - FreeSWITCH will play hold music');
+                  } else if (session.dialog && typeof session.dialog.invite === 'function') {
+                    // Alternative: use dialog to send re-INVITE with hold headers
+                    await session.dialog.invite({
+                      sessionDescriptionHandlerModifiers: [(sdh: any) => Promise.resolve(offer.sdp)],
+                      requestOptions: {
+                        extraHeaders: [
+                          'Subject: Call on hold',
+                          'Supported: replaces, outbound, gruu, path, record-aware',
+                          'Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, NOTIFY, MESSAGE, SUBSCRIBE, INFO, PRACK, UPDATE'
+                        ]
+                      }
+                    });
+                    console.log('✅ Sent Linphone-style SIP hold via dialog - FreeSWITCH will play hold music');
+                  } else {
+                    console.warn('Could not send re-INVITE for hold, using track muting only');
+                  }
+                }
+              } catch (sdpError) {
+                console.warn('Failed to send hold via re-INVITE, falling back to track muting:', sdpError);
+                // Fallback to just muting tracks
+                const senders = pc.getSenders();
+                senders.forEach((sender: RTCRtpSender) => {
+                  if (sender.track && sender.track.kind === 'audio') {
+                    sender.track.enabled = false;
+                  }
+                });
+              }
+            } else {
+              console.log(`Signaling state not stable after waiting (${pc.signalingState}), using track muting for hold`);
+              // Just mute tracks if signaling state is not stable
+              const senders = pc.getSenders();
+              senders.forEach((sender: RTCRtpSender) => {
+                if (sender.track && sender.track.kind === 'audio') {
+                  sender.track.enabled = false;
+                }
+              });
             }
-          });
+          }
         }
+        
         // Update call info
         callInfo.isOnHold = true;
-        // Mute the audio for this held call
+        // Mute local audio as additional measure
         this.setAudioForSession(sessionId, true);
+        
         // Switch to another active call if available
         const activeCalls = this.getCallInfosArray().filter(c => !c.isOnHold);
         if (activeCalls.length > 0) {
           this.activeSessionId = activeCalls[0].sessionId;
         }
         this.updateCallState();
-        console.log('Call placed on hold:', sessionId);
+        console.log('Call placed on hold (server-side):', sessionId);
       } catch (error: any) {
         console.error('Failed to hold call:', error);
         throw new Error('Failed to place call on hold');
@@ -1023,23 +1112,103 @@ export class SipService {
             }
           }
         }
-        // Unmute the microphone to resume call
-        const pc = session.sessionDescriptionHandler?.peerConnection;
-        if (pc) {
-          const senders = pc.getSenders();
-          senders.forEach((sender: RTCRtpSender) => {
-            if (sender.track && sender.track.kind === 'audio') {
-              sender.track.enabled = true;
+        
+        // Resume call with proper SIP unhold
+        const sessionDescriptionHandler = session.sessionDescriptionHandler;
+        if (sessionDescriptionHandler) {
+          const pc = sessionDescriptionHandler.peerConnection;
+          if (pc) {
+            // First unmute the tracks
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = true;
+              }
+            });
+            
+            // Wait for signaling state to stabilize before attempting unhold
+            const waitForStableState = async (maxWaitMs: number = 1000): Promise<boolean> => {
+              const startTime = Date.now();
+              while (pc.signalingState !== 'stable' && (Date.now() - startTime) < maxWaitMs) {
+                console.log(`Waiting for stable signaling state for unhold, current: ${pc.signalingState}`);
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
+              return pc.signalingState === 'stable';
+            };
+
+            const isStable = await waitForStableState();
+            if (isStable) {
+              try {
+                // Double-check signaling state before proceeding
+                if (pc.signalingState !== 'stable') {
+                  throw new Error(`Signaling state changed to ${pc.signalingState} before creating unhold offer`);
+                }
+                
+                const remoteDesc = pc.remoteDescription;
+                if (remoteDesc) {
+                  console.log(`Creating unhold offer with signaling state: ${pc.signalingState}`);
+                  // Create a new offer
+                  const offer = await pc.createOffer();
+                  
+                  // Modify SDP to indicate resume (sendrecv)
+                  if (offer.sdp) {
+                    offer.sdp = offer.sdp.replace(/a=sendonly/g, 'a=sendrecv');
+                    offer.sdp = offer.sdp.replace(/a=inactive/g, 'a=sendrecv');
+                    offer.sdp = offer.sdp.replace(/a=recvonly/g, 'a=sendrecv');
+                  }
+                  
+                  // Set local description
+                  await pc.setLocalDescription(offer);
+                  
+                  // Send re-INVITE for unhold - remove hold subject
+                  if (typeof (session as any).invite === 'function') {
+                    // Send re-INVITE without hold subject to resume call
+                    await (session as any).invite({
+                      requestDelegate: {
+                        onAccept: () => console.log('Unhold re-INVITE accepted'),
+                        onReject: () => console.warn('Unhold re-INVITE rejected')
+                      },
+                      requestOptions: {
+                        extraHeaders: [
+                          'Supported: replaces, outbound, gruu, path, record-aware',
+                          'Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, NOTIFY, MESSAGE, SUBSCRIBE, INFO, PRACK, UPDATE'
+                        ]
+                      }
+                    });
+                    console.log('✅ Sent SIP unhold (re-INVITE with sendrecv) - FreeSWITCH will stop hold music');
+                  } else if (session.dialog && typeof session.dialog.invite === 'function') {
+                    // Alternative: use dialog to send re-INVITE for unhold
+                    await session.dialog.invite({
+                      sessionDescriptionHandlerModifiers: [(sdh: any) => Promise.resolve(offer.sdp)],
+                      requestOptions: {
+                        extraHeaders: [
+                          'Supported: replaces, outbound, gruu, path, record-aware',
+                          'Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, NOTIFY, MESSAGE, SUBSCRIBE, INFO, PRACK, UPDATE'
+                        ]
+                      }
+                    });
+                    console.log('✅ Sent SIP unhold via dialog - FreeSWITCH will stop hold music');
+                  } else {
+                    console.warn('Could not send re-INVITE for unhold');
+                  }
+                }
+              } catch (sdpError) {
+                console.warn('Failed to send unhold via re-INVITE:', sdpError);
+              }
+            } else {
+              console.log(`Signaling state not stable after waiting for unhold (${pc.signalingState}), tracks unmuted only`);
             }
-          });
+          }
         }
+        
         // Update call info
         callInfo.isOnHold = false;
         this.activeSessionId = sessionId;
+        
         // Manage audio: unmute this call, mute others
         this.muteAllInactiveCalls();
         this.updateCallState();
-        console.log('Call resumed:', sessionId);
+        console.log('Call resumed from hold (server-side):', sessionId);
       } catch (error: any) {
         console.error('Failed to unhold call:', error);
         throw new Error('Failed to resume call');
