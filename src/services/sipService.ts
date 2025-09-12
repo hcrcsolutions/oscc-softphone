@@ -1118,11 +1118,21 @@ export class SipService {
         if (sessionDescriptionHandler) {
           const pc = sessionDescriptionHandler.peerConnection;
           if (pc) {
-            // First unmute the tracks
+            // Unmute both sending and receiving tracks
             const senders = pc.getSenders();
             senders.forEach((sender: RTCRtpSender) => {
               if (sender.track && sender.track.kind === 'audio') {
                 sender.track.enabled = true;
+                console.log('Unmuted outgoing audio track');
+              }
+            });
+            
+            // Also ensure receivers are properly handling audio
+            const receivers = pc.getReceivers();
+            receivers.forEach((receiver: RTCRtpReceiver) => {
+              if (receiver.track && receiver.track.kind === 'audio') {
+                receiver.track.enabled = true;
+                console.log('Ensured incoming audio track is enabled');
               }
             });
             
@@ -1150,11 +1160,15 @@ export class SipService {
                   // Create a new offer
                   const offer = await pc.createOffer();
                   
-                  // Modify SDP to indicate resume (sendrecv)
+                  // Modify SDP to resume audio - only change sendonly back to sendrecv
+                  // Don't change recvonly as that's set by the remote party
                   if (offer.sdp) {
+                    // Only replace sendonly with sendrecv (this was set by us during hold)
                     offer.sdp = offer.sdp.replace(/a=sendonly/g, 'a=sendrecv');
+                    // Replace inactive with sendrecv
                     offer.sdp = offer.sdp.replace(/a=inactive/g, 'a=sendrecv');
-                    offer.sdp = offer.sdp.replace(/a=recvonly/g, 'a=sendrecv');
+                    // Do NOT change recvonly - leave it as is since it's set by remote
+                    console.log('Unhold SDP direction changes: sendonly→sendrecv, inactive→sendrecv (recvonly preserved)');
                   }
                   
                   // Set local description
@@ -1204,6 +1218,9 @@ export class SipService {
         // Update call info
         callInfo.isOnHold = false;
         this.activeSessionId = sessionId;
+        
+        // Explicitly unmute the audio element for this session
+        this.setAudioForSession(sessionId, false);
         
         // Manage audio: unmute this call, mute others
         this.muteAllInactiveCalls();
