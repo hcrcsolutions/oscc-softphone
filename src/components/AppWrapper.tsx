@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import Phone from '@/components/Phone';
-import Phone2 from '@/components/Phone2';
 import Setup from '@/components/Setup';
 
 export default function AppWrapper() {
@@ -30,8 +29,6 @@ export default function AppWrapper() {
     switch (activeComponent) {
       case 'phone':
         return <Phone theme={theme} />;
-      case 'phone2':
-        return <Phone2 theme={theme} />;
       case 'setup':
         return <Setup />;
       default:

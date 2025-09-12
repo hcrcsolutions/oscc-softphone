@@ -13,7 +13,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [callState, setCallState] = useState<CallState>({ status: 'idle' });
   const [activeCalls, setActiveCalls] = useState<CallInfo[]>([]);
   const [isRegistered, setIsRegistered] = useState(false);
-  const [callHistory, setCallHistory] = useState<Array<{number: string, time: string, type: 'outgoing' | 'incoming' | 'failed', duration?: string}>>([]);
+  const [callHistory, setCallHistory] = useState<Array<{ number: string, time: string, type: 'outgoing' | 'incoming' | 'failed', duration?: string }>>([]);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [callDurations, setCallDurations] = useState<Map<string, number>>(new Map());
@@ -30,17 +30,13 @@ export default function Phone({ theme }: PhoneProps) {
 
   useEffect(() => {
     const service = sipService.current;
-    
     service.setCallStateCallback((state: CallState) => {
       console.log('Phone (SIP.js) - Call state changed:', state);
       setCallState(state);
-      
       // Update active calls list
       setActiveCalls(service.getAllActiveCalls());
-      
       // Update conference mode state
       setIsConferenceMode(service.isInConferenceMode());
-      
       // Pre-initialize media for incoming calls to speed up answering
       if (state.status === 'ringing' && !preInitializedMedia.current) {
         console.log('Pre-initializing media for incoming call...');
@@ -51,42 +47,35 @@ export default function Phone({ theme }: PhoneProps) {
           console.warn('Failed to pre-initialize media:', error);
         });
       }
-      
       // Clean up pre-initialized media when call ends
       if (state.status === 'idle' && preInitializedMedia.current) {
         preInitializedMedia.current.getTracks().forEach(track => track.stop());
         preInitializedMedia.current = null;
         console.log('Cleaned up pre-initialized media');
       }
-      
       // Handle per-call timers
       if (state.status === 'connected' && state.sessionId) {
         const sessionId = state.sessionId;
-        
         // Start timer for this specific call if not already started
         if (!callTimers.current.has(sessionId)) {
           // Get the call info to use the actual connected time
           const callInfo = service.getCallInfo(sessionId);
           const connectedTime = callInfo?.connectedTime || new Date();
-          
           const timer = setInterval(() => {
             const now = new Date();
             const elapsed = Math.floor((now.getTime() - connectedTime.getTime()) / 1000);
             setCallDurations(prev => new Map(prev.set(sessionId, elapsed)));
           }, 1000);
-          
           callTimers.current.set(sessionId, timer);
           console.log('Timer started for call:', sessionId, 'connected at:', connectedTime);
         }
       }
-      
       // Legacy single call timer (kept for backward compatibility)
       if (state.status === 'connected' && !callStartTime.current && state.sessionId) {
         // Use the actual connected time from CallInfo
         const callInfo = service.getCallInfo(state.sessionId);
         callStartTime.current = callInfo?.connectedTime || new Date();
         console.log('Legacy timer - Call started at:', callStartTime.current);
-        
         // Start the timer
         timerInterval.current = setInterval(() => {
           if (callStartTime.current) {
@@ -96,12 +85,10 @@ export default function Phone({ theme }: PhoneProps) {
           }
         }, 1000);
       }
-      
       // Clean up per-call timer and add to call history when call ends
       if (state.status === 'idle' && state.remoteNumber) {
         console.log('Phone (SIP.js) - Adding call to history:', state.remoteNumber);
         let duration: string | undefined;
-        
         // Clean up per-call timer if available
         if (state.sessionId && callTimers.current.has(state.sessionId)) {
           const timer = callTimers.current.get(state.sessionId);
@@ -109,7 +96,6 @@ export default function Phone({ theme }: PhoneProps) {
             clearInterval(timer);
             callTimers.current.delete(state.sessionId);
           }
-          
           // Calculate final duration directly from connectedTime instead of timer value
           const callInfo = service.getCallInfo(state.sessionId);
           if (callInfo?.connectedTime) {
@@ -119,7 +105,6 @@ export default function Phone({ theme }: PhoneProps) {
             duration = formatElapsedTime(totalSeconds);
             console.log('Final duration calculated from connectedTime:', duration);
           }
-          
           // Clean up duration tracking
           setCallDurations(prev => {
             const newMap = new Map(prev);
@@ -127,7 +112,6 @@ export default function Phone({ theme }: PhoneProps) {
             return newMap;
           });
         }
-        
         // Fallback if no timer was running or no sessionId
         if (!duration) {
           if (state.sessionId) {
@@ -141,7 +125,6 @@ export default function Phone({ theme }: PhoneProps) {
               console.log('Fallback: duration from connectedTime:', duration);
             }
           }
-          
           // Ultimate fallback to legacy timer
           if (!duration && callStartTime.current) {
             const endTime = new Date();
@@ -150,10 +133,8 @@ export default function Phone({ theme }: PhoneProps) {
             duration = formatElapsedTime(totalSeconds);
             console.log('Ultimate fallback: duration from legacy timer:', duration);
           }
-          
           callStartTime.current = null;
         }
-        
         const historyEntry = {
           number: state.remoteNumber,
           time: new Date().toLocaleTimeString(),
@@ -162,7 +143,6 @@ export default function Phone({ theme }: PhoneProps) {
         };
         setCallHistory(prev => [historyEntry, ...prev.slice(0, 9)]); // Keep last 10 calls
       }
-      
       // Reset call start time on failed calls
       if (state.status === 'failed') {
         callStartTime.current = null;
@@ -171,7 +151,6 @@ export default function Phone({ theme }: PhoneProps) {
           timerInterval.current = null;
         }
         setCallDuration(0);
-        
         // Add failed call to history
         if (state.remoteNumber) {
           const historyEntry = {
@@ -182,12 +161,10 @@ export default function Phone({ theme }: PhoneProps) {
           };
           setCallHistory(prev => [historyEntry, ...prev.slice(0, 9)]);
         }
-        
         // Show error alert
         const errorMsg = state.errorMessage || 'Call failed. Please check your connection and try again.';
         showError(errorMsg);
       }
-      
       // Clear timer when call ends normally
       if (state.status === 'idle') {
         if (timerInterval.current) {
@@ -207,12 +184,9 @@ export default function Phone({ theme }: PhoneProps) {
         try {
           const config: SipConfig = JSON.parse(savedConfig);
           setExtension(config.username);
-          
           console.log('Auto-connecting to SIP server...');
-          
           // Initialize audio context early (requires user interaction in some browsers)
           service.enableAudio();
-          
           // Configure and connect
           await service.configure(config);
           console.log('SIP auto-connection successful');
@@ -224,7 +198,6 @@ export default function Phone({ theme }: PhoneProps) {
         console.log('No saved SIP configuration found');
       }
     };
-    
     // Initiate auto-connection
     autoConnect();
 
@@ -258,17 +231,14 @@ export default function Phone({ theme }: PhoneProps) {
 
   const handleCall = async () => {
     if (!phoneNumber.trim()) return;
-    
     // Enable audio on user interaction
     sipService.current.enableAudio();
-    
     try {
       // Check if we're in a secure context (HTTPS)
       if (!window.isSecureContext) {
         showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
         return;
       }
-      
       // Check for microphone permissions first
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
@@ -290,7 +260,6 @@ export default function Phone({ theme }: PhoneProps) {
           }
         }
       }
-      
       await sipService.current.makeCall(phoneNumber);
     } catch (error: any) {
       console.error('Failed to make call:', error);
@@ -327,19 +296,15 @@ export default function Phone({ theme }: PhoneProps) {
   const handleAnswer = async () => {
     // Prevent multiple clicks
     if (isAnswering) return;
-    
     setIsAnswering(true);
-    
     try {
       // Enable audio on user interaction
       sipService.current.enableAudio();
-      
       // Check if we're in a secure context (HTTPS)
       if (!window.isSecureContext) {
         showError('Microphone access requires a secure connection (HTTPS). Please access this application using HTTPS.');
         return;
       }
-      
       // Check for microphone permissions (skip if already pre-initialized)
       if (!preInitializedMedia.current && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
@@ -363,7 +328,6 @@ export default function Phone({ theme }: PhoneProps) {
           }
         }
       }
-      
       await sipService.current.answerCall();
     } catch (error: any) {
       console.error('Failed to answer call:', error);
@@ -400,13 +364,12 @@ export default function Phone({ theme }: PhoneProps) {
       console.log('Audio context resumed');
       setAudioEnabled(true);
     });
-    
     // Also try to play silence to enable audio
     const audio = new Audio();
     audio.src = 'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIG2m98OScTgwOUarm7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWT' +
-               'AkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOU' +
-               'qzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHwU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RkFAU8k9f0wHgiBCh+zPLTgzUIHWq+8+OWT';
-    audio.play().catch(() => {});
+      'AkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOU' +
+      'qzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHgU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RlHwU8k9j1wHkiBSh+zPPTgjQIHWu/8+OVTQoQUqvj67RkHwU9k9f1wHkiBSh+zPPTgzQIHmm98OScTgwOUqzl7bllHgQ8k9j1wHgiBCh+zPLTgzUIF2u+8OScTgwOUqzl7blmFgU7k9n1unEiBC13yO/eizEIHWq+8+OWTAkPU6zk67RkFAU8k9f0wHgiBCh+zPLTgzUIHWq+8+OWT';
+    audio.play().catch(() => { });
   };
 
   const getStatusColor = () => {
@@ -455,7 +418,7 @@ export default function Phone({ theme }: PhoneProps) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <span>{errorMessage}</span>
-          <button 
+          <button
             onClick={() => setShowErrorAlert(false)}
             className="btn btn-sm btn-ghost"
           >
@@ -463,167 +426,159 @@ export default function Phone({ theme }: PhoneProps) {
           </button>
         </div>
       )}
-      
       <div className="max-w-2xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-        <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>
-        <div className="flex gap-2">
-          <div className={`badge ${getStatusColor()}`}>
-            {getStatusText()}
-          </div>
-          <div className="badge badge-outline">
-            Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
+          <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>
+          <div className="flex gap-2">
+            <div className={`badge ${getStatusColor()}`}>
+              {getStatusText()}
+            </div>
+            <div className="badge badge-outline">
+              Theme: {theme === 'light' ? 'Light Mode' : 'Dark Mode'}
+            </div>
           </div>
         </div>
-      </div>
-      
-      {/* Multi-call management panel */}
-      {activeCalls.length > 0 && (
-        <div className="card bg-base-100 shadow-xl max-w-2xl mx-auto mb-6">
-          <div className="card-body">
-            <div className="flex justify-between items-center mb-4">
-              <div>
-                <h3 className="card-title">Active Calls ({activeCalls.length})</h3>
-                {isConferenceMode && (
-                  <div className="text-sm text-info mt-1">
-                    Conference Mode • {sipService.current.getConferenceSize()} participants
-                  </div>
+        {/* Multi-call management panel */}
+        {activeCalls.length > 0 && (
+          <div className="card bg-base-100 shadow-xl max-w-2xl mx-auto mb-6">
+            <div className="card-body">
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="card-title">Active Calls ({activeCalls.length})</h3>
+                  {isConferenceMode && (
+                    <div className="text-sm text-info mt-1">
+                      Conference Mode • {sipService.current.getConferenceSize()} participants
+                    </div>
+                  )}
+                </div>
+                {activeCalls.length > 1 && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        if (isConferenceMode) {
+                          await sipService.current.disableConferenceMode();
+                        } else {
+                          await sipService.current.enableConferenceMode();
+                        }
+                      } catch (error) {
+                        console.error('Conference operation failed:', error);
+                        showError('Failed to manage conference. Please try again.');
+                      }
+                    }}
+                    className={`btn btn-sm ${isConferenceMode ? 'btn-warning' : 'btn-success'}`}
+                    title={isConferenceMode ? 'Exit Conference (keep incoming call, disconnect outgoing calls)' : 'Start Conference'}
+                  >
+                    {isConferenceMode ? 'Exit Conference' : 'Conference All'}
+                  </button>
                 )}
               </div>
-              {activeCalls.length > 1 && (
-                <button
-                  onClick={async () => {
-                    try {
-                      if (isConferenceMode) {
-                        await sipService.current.disableConferenceMode();
-                      } else {
-                        await sipService.current.enableConferenceMode();
-                      }
-                    } catch (error) {
-                      console.error('Conference operation failed:', error);
-                      showError('Failed to manage conference. Please try again.');
-                    }
-                  }}
-                  className={`btn btn-sm ${isConferenceMode ? 'btn-warning' : 'btn-success'}`}
-                  title={isConferenceMode ? 'Exit Conference (keep incoming call, disconnect outgoing calls)' : 'Start Conference'}
-                >
-                  {isConferenceMode ? 'Exit Conference' : 'Conference All'}
-                </button>
-              )}
-            </div>
-            <div className="space-y-2">
-              {activeCalls.map((call) => {
-                const elapsedTime = callDurations.get(call.sessionId) || 0;
-                const isInConference = sipService.current.isInConference(call.sessionId);
-                return (
-                  <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-3 h-3 rounded-full ${call.isOnHold ? 'bg-warning' : 'bg-success'}`}></div>
-                      <div>
-                        <div className="font-semibold">{call.remoteNumber}</div>
-                        <div className="text-sm opacity-70">
-                          {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
-                          {isInConference && <span className="ml-2 badge badge-sm badge-info">Conference</span>}
-                          {elapsedTime > 0 && <span className="ml-2 font-mono">({formatElapsedTime(elapsedTime)})</span>}
+              <div className="space-y-2">
+                {activeCalls.map((call) => {
+                  const elapsedTime = callDurations.get(call.sessionId) || 0;
+                  const isInConference = sipService.current.isInConference(call.sessionId);
+                  return (
+                    <div key={call.sessionId} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
+                      <div className="flex items-center space-x-3">
+                        <div className={`w-3 h-3 rounded-full ${call.isOnHold ? 'bg-warning' : 'bg-success'}`}></div>
+                        <div>
+                          <div className="font-semibold">{call.remoteNumber}</div>
+                          <div className="text-sm opacity-70">
+                            {call.direction === 'incoming' ? 'Incoming' : 'Outgoing'} • {call.isOnHold ? 'On Hold' : 'Active'}
+                            {isInConference && <span className="ml-2 badge badge-sm badge-info">Conference</span>}
+                            {elapsedTime > 0 && <span className="ml-2 font-mono">({formatElapsedTime(elapsedTime)})</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      {/* Accept call control - only show for ringing incoming calls */}
-                      {call.status === 'ringing' && call.direction === 'incoming' && (
-                        <button
-                          onClick={handleAnswer}
-                          className="btn btn-sm btn-success"
-                          disabled={isAnswering}
-                          title={isAnswering ? "Connecting..." : "Answer call"}
-                        >
-                          <TbPhoneIncoming className="w-4 h-4" />
-                        </button>
-                      )}
-                      
-                      {/* Conference participation controls */}
-                      {isConferenceMode && activeCalls.length > 1 && (
-                        isInConference ? (
+                      <div className="flex gap-2">
+                        {/* Accept call control - only show for ringing incoming calls */}
+                        {call.status === 'ringing' && call.direction === 'incoming' && (
                           <button
-                            onClick={() => sipService.current.removeFromConference(call.sessionId)}
-                            className="btn btn-sm btn-outline btn-warning"
-                            title="Remove from conference"
-                          >
-                            <TbUsers className="w-4 h-4" />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => sipService.current.addToConference(call.sessionId)}
-                            className="btn btn-sm btn-outline btn-info"
-                            title={call.isOnHold ? "Add to conference (will resume call)" : "Add to conference"}
-                          >
-                            <TbUserPlus className="w-4 h-4" />
-                          </button>
-                        )
-                      )}
-                      
-                      {/* Hold/Resume controls - only show when call is connected */}
-                      {call.status === 'connected' && (
-                        call.isOnHold ? (
-                          <button
-                            onClick={() => sipService.current.unholdCallBySessionId(call.sessionId)}
+                            onClick={handleAnswer}
                             className="btn btn-sm btn-success"
-                            title="Resume call"
+                            disabled={isAnswering}
+                            title={isAnswering ? "Connecting..." : "Answer call"}
                           >
-                            <TbPlayerPlay className="w-4 h-4" />
+                            <TbPhoneIncoming className="w-4 h-4" />
                           </button>
-                        ) : (
-                          <button
-                            onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
-                            className="btn btn-sm btn-info"
-                            title="Hold call"
-                          >
-                            <TbPlayerPause className="w-4 h-4" />
-                          </button>
-                        )
-                      )}
-                      
-                      {/* End call control */}
-                      <button
-                        onClick={() => sipService.current.endCall(call.sessionId)}
-                        className="btn btn-sm btn-error"
-                        title="End call"
-                      >
-                        <TbPhoneOff className="w-4 h-4" />
-                      </button>
+                        )}
+                        {/* Conference participation controls */}
+                        {isConferenceMode && activeCalls.length > 1 && (
+                          isInConference ? (
+                            <button
+                              onClick={() => sipService.current.removeFromConference(call.sessionId)}
+                              className="btn btn-sm btn-outline btn-warning"
+                              title="Remove from conference"
+                            >
+                              <TbUsers className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => sipService.current.addToConference(call.sessionId)}
+                              className="btn btn-sm btn-outline btn-info"
+                              title={call.isOnHold ? "Add to conference (will resume call)" : "Add to conference"}
+                            >
+                              <TbUserPlus className="w-4 h-4" />
+                            </button>
+                          )
+                        )}
+                        {/* Hold/Resume controls - only show when call is connected */}
+                        {call.status === 'connected' && (
+                          call.isOnHold ? (
+                            <button
+                              onClick={() => sipService.current.unholdCallBySessionId(call.sessionId)}
+                              className="btn btn-sm btn-success"
+                              title="Resume call"
+                            >
+                              <TbPlayerPlay className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => sipService.current.holdCallBySessionId(call.sessionId)}
+                              className="btn btn-sm btn-info"
+                              title="Hold call"
+                            >
+                              <TbPlayerPause className="w-4 h-4" />
+                            </button>
+                          )
+                        )}
+                        {/* End call control */}
+                        <button
+                          onClick={() => sipService.current.endCall(call.sessionId)}
+                          className="btn btn-sm btn-error"
+                          title="End call"
+                        >
+                          <TbPhoneOff className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
-      )}
-      
+        )}
         <div className="card bg-base-100 shadow-xl max-w-md mx-auto">
           <div className="card-body">
             <h3 className="card-title mb-4 text-center">Dialer</h3>
-          
-          <div className="flex gap-2 mb-4">
-            <input 
-              type="text" 
-              placeholder="Enter phone number" 
-              className="input input-bordered flex-1"
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-            />
-            <button 
-              onClick={handleClearNumber}
-              className="btn btn-outline"
-            >
-              Clear
-            </button>
-          </div>
-          
+            <div className="flex gap-2 mb-4">
+              <input
+                type="text"
+                placeholder="Enter phone number"
+                className="input input-bordered flex-1"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+              />
+              <button
+                onClick={handleClearNumber}
+                className="btn btn-outline"
+              >
+                Clear
+              </button>
+            </div>
             <div className="grid grid-cols-3 gap-3 mb-4 justify-items-center">
               {[1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'].map((digit) => (
-                <button 
-                  key={digit} 
+                <button
+                  key={digit}
                   className="btn btn-circle btn-outline rounded-full text-6xl font-bold"
                   style={{ width: '4rem', height: '4rem', fontSize: '2rem', borderRadius: '9999px' }}
                   onClick={() => handleDigitClick(digit)}
@@ -631,107 +586,104 @@ export default function Phone({ theme }: PhoneProps) {
                   {digit}
                 </button>
               ))}
-          </div>
-          
-          {/* Always show the call button for making new calls */}
-          <button 
-            onClick={handleCall}
-            disabled={!isRegistered || phoneNumber.trim() === ''}
-            className="btn btn-primary w-full mb-4"
-          >
-            <TbPhone className="w-5 h-5" />
-            Call {phoneNumber}
-          </button>
-
-          {/* Call state specific controls */}
-          {callState.status === 'ringing' && (
-            <div className="flex gap-2">
-              <button 
-                onClick={handleAnswer}
-                className="btn btn-success flex-1"
-                disabled={isAnswering}
-              >
-                <TbPhoneIncoming className="w-5 h-5" />
-                {isAnswering ? 'Connecting...' : 'Answer'}
-              </button>
-              <button 
-                onClick={handleReject}
-                className="btn btn-error flex-1"
-              >
-                <TbPhoneOff className="w-5 h-5" />
-                Decline
-              </button>
             </div>
-          )}
+            {/* Always show the call button for making new calls */}
+            <button
+              onClick={handleCall}
+              disabled={!isRegistered || phoneNumber.trim() === ''}
+              className="btn btn-primary w-full mb-4"
+            >
+              <TbPhone className="w-5 h-5" />
+              Call {phoneNumber}
+            </button>
 
-          {(callState.status === 'connected' || callState.status === 'connecting') && activeCalls.length === 1 && (
-            <div className="flex gap-2">
-              {callState.status === 'connected' && (
-                <button 
-                  onClick={handleHold}
-                  className={`btn flex-1 ${callState.isOnHold ? 'btn-success' : 'btn-info'}`}
+            {/* Call state specific controls */}
+            {callState.status === 'ringing' && (
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAnswer}
+                  className="btn btn-success flex-1"
+                  disabled={isAnswering}
                 >
-                  {callState.isOnHold ? (
-                    <>
-                      <TbPlayerPlay className="w-5 h-5" />
-                      Resume
-                    </>
-                  ) : (
-                    <>
-                      <TbPlayerPause className="w-5 h-5" />
-                      Hold
-                    </>
-                  )}
+                  <TbPhoneIncoming className="w-5 h-5" />
+                  {isAnswering ? 'Connecting...' : 'Answer'}
                 </button>
-              )}
-              <button 
-                onClick={handleHangup}
-                className={`btn btn-error ${callState.status === 'connected' ? 'flex-1' : 'w-full'}`}
-              >
-                <TbPhoneOff className="w-5 h-5" />
-                Hang Up
-              </button>
-            </div>
-          )}
-          
-          {activeCalls.length > 1 && (
-            <div className="text-center text-sm opacity-70 mt-2">
-              Use individual controls above to manage multiple calls
-            </div>
-          )}
+                <button
+                  onClick={handleReject}
+                  className="btn btn-error flex-1"
+                >
+                  <TbPhoneOff className="w-5 h-5" />
+                  Decline
+                </button>
+              </div>
+            )}
 
-          {callState.status === 'idle' && (
-            <div className="text-center text-sm opacity-70 mt-2">
-              Ready to make calls
-            </div>
-          )}
+            {(callState.status === 'connected' || callState.status === 'connecting') && activeCalls.length === 1 && (
+              <div className="flex gap-2">
+                {callState.status === 'connected' && (
+                  <button
+                    onClick={handleHold}
+                    className={`btn flex-1 ${callState.isOnHold ? 'btn-success' : 'btn-info'}`}
+                  >
+                    {callState.isOnHold ? (
+                      <>
+                        <TbPlayerPlay className="w-5 h-5" />
+                        Resume
+                      </>
+                    ) : (
+                      <>
+                        <TbPlayerPause className="w-5 h-5" />
+                        Hold
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={handleHangup}
+                  className={`btn btn-error ${callState.status === 'connected' ? 'flex-1' : 'w-full'}`}
+                >
+                  <TbPhoneOff className="w-5 h-5" />
+                  Hang Up
+                </button>
+              </div>
+            )}
+            {activeCalls.length > 1 && (
+              <div className="text-center text-sm opacity-70 mt-2">
+                Use individual controls above to manage multiple calls
+              </div>
+            )}
+
+            {callState.status === 'idle' && (
+              <div className="text-center text-sm opacity-70 mt-2">
+                Ready to make calls
+              </div>
+            )}
           </div>
         </div>
-        
         <div className="card bg-base-100 shadow-xl mt-6">
           <div className="card-body">
             <h3 className="card-title">Call History</h3>
-          <div className="divider"></div>
-          {callHistory.length > 0 ? (
-            <div className="space-y-2">
-              {callHistory.map((call, index) => (
-                <div key={index} className="flex justify-between items-center p-2 bg-base-200 rounded">
-                  <span className="font-medium">{call.number}</span>
-                  <div className="text-sm text-base-content/60">
-                    <span className={`badge badge-xs ${call.type === 'outgoing' ? 'badge-success' : call.type === 'incoming' ? 'badge-info' : 'badge-error'} mr-2`}>
-                      {call.type}
-                    </span>
-                    {call.time}
-                    {call.duration && <span className="ml-2 text-xs">({call.duration})</span>}
+            <div className="divider"></div>
+            {callHistory.length > 0 ? (
+              <div className="space-y-2">
+                {callHistory.map((call, index) => (
+                  <div key={index} className="flex justify-between items-center p-2 bg-base-200 rounded">
+                    <span className="font-medium">{call.number}</span>
+                    <div className="text-sm text-base-content/60">
+                      <span className={`badge badge-xs ${call.type === 'outgoing' ? 'badge-success' : call.type === 'incoming' ? 'badge-info' : 'badge-error'} mr-2`}>
+                        {call.type}
+                      </span>
+                      {call.time}
+                      {call.duration && <span className="ml-2 text-xs">({call.duration})</span>}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-base-content/60 py-8">
-              No call history available
-            </div>
-          )}
+                ))}
+              </div>
+            ) : (
+              <div className="text-center text-base-content/60 py-8">
+                No call history available
+              </div>
+            )}
           </div>
         </div>
       </div>

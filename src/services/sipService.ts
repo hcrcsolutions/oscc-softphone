@@ -1,8 +1,8 @@
-import { 
-  UserAgent, 
-  Registerer, 
-  Inviter, 
-  SessionState, 
+import {
+  UserAgent,
+  Registerer,
+  Inviter,
+  SessionState,
   UserAgentOptions,
   URI,
   Session
@@ -86,9 +86,8 @@ export class SipService {
 
   private updateCallState(sessionId?: string, status?: CallState['status']) {
     const activeCalls = this.getCallInfosArray();
-    
     if (activeCalls.length === 0) {
-      this.onCallStateChanged?.({ 
+      this.onCallStateChanged?.({
         status: 'idle',
         activeCalls: []
       });
@@ -156,7 +155,6 @@ export class SipService {
 
     document.body.appendChild(audio);
     this.sessionAudioElements.set(sessionId, audio);
-    
     return audio;
   }
 
@@ -184,7 +182,6 @@ export class SipService {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
-    
     // Resume AudioContext if it's suspended (required by browsers for auto-play)
     if (this.audioContext.state === 'suspended') {
       this.audioContext.resume().then(() => {
@@ -214,14 +211,13 @@ export class SipService {
       }
 
       // Get media stream early to speed up call answering
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
-        } 
+        }
       });
-      
       console.log('Media pre-initialized successfully');
       return stream;
     } catch (error) {
@@ -241,7 +237,6 @@ export class SipService {
       // Create ringback tone pattern (350Hz + 440Hz, 2s on, 4s off)
       const playRingback = () => {
         if (!this.audioContext) return;
-        
         const oscillator1 = this.audioContext.createOscillator();
         const oscillator2 = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
@@ -249,7 +244,6 @@ export class SipService {
         // Outgoing ringback: 350Hz + 440Hz (lower pitch, different from incoming)
         oscillator1.frequency.setValueAtTime(350, this.audioContext.currentTime);
         oscillator2.frequency.setValueAtTime(440, this.audioContext.currentTime);
-        
         gainNode.gain.setValueAtTime(0.15, this.audioContext.currentTime); // Moderate volume
 
         oscillator1.connect(gainNode);
@@ -317,7 +311,6 @@ export class SipService {
         console.error('SIP.js: AudioContext not available for ringtone');
         return;
       }
-      
       console.log('SIP.js: AudioContext state:', this.audioContext.state);
 
       // Stop any existing ringtone
@@ -326,9 +319,7 @@ export class SipService {
       // Create distinctive double-ring pattern for incoming calls
       const playDoubleRing = () => {
         if (!this.audioContext) return;
-        
         const audioCtx = this.audioContext; // Capture context reference
-        
         // First ring burst
         const createRingBurst = (delay: number) => {
           const oscillator1 = audioCtx.createOscillator();
@@ -338,7 +329,6 @@ export class SipService {
           // Incoming ringtone: 523Hz + 659Hz (higher pitched, more urgent)
           oscillator1.frequency.setValueAtTime(523, audioCtx.currentTime); // C5
           oscillator2.frequency.setValueAtTime(659, audioCtx.currentTime); // E5
-          
           // Create envelope for ring burst
           gainNode.gain.setValueAtTime(0, audioCtx.currentTime + delay);
           gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + delay + 0.01);
@@ -351,14 +341,12 @@ export class SipService {
 
           oscillator1.start(audioCtx.currentTime + delay);
           oscillator2.start(audioCtx.currentTime + delay);
-          
           oscillator1.stop(audioCtx.currentTime + delay + 0.5);
           oscillator2.stop(audioCtx.currentTime + delay + 0.5);
         };
-        
         // Create double ring pattern: ring-ring-silence
-        createRingBurst(0);      // First ring at 0ms
-        createRingBurst(0.7);    // Second ring at 700ms
+        createRingBurst(0); // First ring at 0ms
+        createRingBurst(0.7); // Second ring at 700ms
         // Total pattern duration: 1.2s, then 2.8s silence
       };
 
@@ -384,27 +372,20 @@ export class SipService {
   private setupAudioStreams(session: any, sessionId: string) {
     try {
       console.log('Setting up audio streams for session:', sessionId);
-      
       // Create audio element for this specific session
       const remoteAudio = this.createAudioElementForSession(sessionId);
-      
       // Get the session description handler
       const pc = session.sessionDescriptionHandler?.peerConnection;
-      
       if (!pc) {
         console.warn('No peer connection available yet');
         return;
       }
-      
       console.log('Found peer connection, setting up ontrack handler');
-      
       // Set up ontrack event handler for incoming media
       pc.ontrack = (event: RTCTrackEvent) => {
         console.log(`Track received for session ${sessionId}:`, event.track.kind, 'streams:', event.streams.length);
-        
         if (event.track.kind === 'audio') {
           let remoteStream: MediaStream;
-          
           if (event.streams && event.streams.length > 0) {
             remoteStream = event.streams[0];
             console.log('Using provided stream');
@@ -412,14 +393,11 @@ export class SipService {
             remoteStream = new MediaStream([event.track]);
             console.log('Creating new stream from track');
           }
-          
           console.log(`Setting remote stream to audio element for session ${sessionId}`);
           remoteAudio.srcObject = remoteStream;
-          
           // Ensure volume is up
           remoteAudio.volume = 1.0;
           remoteAudio.muted = false;
-          
           // Try to play
           remoteAudio.play().then(() => {
             console.log(`✓ Remote audio playback started successfully for session ${sessionId}`);
@@ -427,7 +405,6 @@ export class SipService {
             console.error(`Failed to start audio playback for session ${sessionId}:`, error);
             // On error, we might need user interaction
             console.log('Audio may require user interaction to start');
-            
             // Try to inform about audio issues
             const activeSession = this.getActiveSession();
             if (this.onCallStateChanged && activeSession?.state === SessionState.Established) {
@@ -437,11 +414,9 @@ export class SipService {
           });
         }
       };
-      
       // Also check if there are already tracks available
       const receivers = pc.getReceivers();
       console.log('Checking existing receivers:', receivers.length);
-      
       receivers.forEach((receiver: RTCRtpReceiver) => {
         if (receiver.track && receiver.track.kind === 'audio') {
           console.log(`Found existing audio track for session ${sessionId}, setting up stream`);
@@ -449,7 +424,6 @@ export class SipService {
           remoteAudio.srcObject = remoteStream;
           remoteAudio.volume = 1.0;
           remoteAudio.muted = false;
-          
           remoteAudio.play().then(() => {
             console.log(`✓ Remote audio playback started from existing track for session ${sessionId}`);
           }).catch((error) => {
@@ -458,7 +432,6 @@ export class SipService {
           });
         }
       });
-      
     } catch (error) {
       console.error('Failed to setup audio streams:', error);
     }
@@ -508,8 +481,8 @@ export class SipService {
   private async connect(): Promise<void> {
     if (!this.config) {
       const error = new Error('SIP configuration not set');
-      this.onCallStateChanged?.({ 
-        status: 'failed', 
+      this.onCallStateChanged?.({
+        status: 'failed',
         errorMessage: 'Phone system not configured. Please check your settings.',
         errorCode: 'CONFIG_MISSING'
       });
@@ -518,12 +491,9 @@ export class SipService {
 
     try {
       // Ensure remote audio is set up
-      
       const domain = this.config.domain || this.config.server;
-      
       const port = this.config.protocol === 'wss' ? '7443' : '5066';
       const serverUrl = `${this.config.protocol}://${this.config.server}:${port}`;
-      
       const userAgentOptions: UserAgentOptions = {
         uri: new URI('sip', this.config.username, domain),
         transportOptions: {
@@ -564,21 +534,18 @@ export class SipService {
 
       // Enable SIP message tracing after UserAgent is started
       await this.userAgent.start();
-      
       // Add SIP message tracing
       if (this.userAgent.transport) {
         const transport = this.userAgent.transport;
         const originalSend = transport.send;
         const originalOnMessage = transport.onMessage;
-        
         // Trace outgoing messages
-        transport.send = function(message) {
+        transport.send = function (message) {
           console.log('🔴 SIP.js SENT:', message);
           return originalSend.call(this, message);
         };
-        
-        // Trace incoming messages  
-        transport.onMessage = function(message) {
+        // Trace incoming messages
+        transport.onMessage = function (message) {
           console.log('🔵 SIP.js RECEIVED:', message);
           if (originalOnMessage) {
             return originalOnMessage.call(this, message);
@@ -587,7 +554,6 @@ export class SipService {
       }
 
       this.registerer = new Registerer(this.userAgent);
-      
       this.registerer.stateChange.addListener((state) => {
         const isRegistered = state === 'Registered';
         this.onRegistrationStateChanged?.(isRegistered);
@@ -598,10 +564,8 @@ export class SipService {
     } catch (error: any) {
       console.error('Failed to connect to SIP server:', error);
       this.onRegistrationStateChanged?.(false);
-      
       let errorMessage = 'Failed to connect to phone system.';
       let errorCode = 'CONNECTION_FAILED';
-      
       if (error.message?.includes('WebSocket')) {
         errorMessage = 'Cannot connect to phone server. Please check your network connection.';
         errorCode = 'WEBSOCKET_ERROR';
@@ -612,13 +576,11 @@ export class SipService {
         errorMessage = 'Connection timeout. The phone server may be unavailable.';
         errorCode = 'TIMEOUT';
       }
-      
-      this.onCallStateChanged?.({ 
-        status: 'failed', 
+      this.onCallStateChanged?.({
+        status: 'failed',
         errorMessage,
         errorCode
       });
-      
       throw error;
     }
   }
@@ -626,7 +588,6 @@ export class SipService {
   private handleIncomingCall(invitation: any) {
     const sessionId = this.generateSessionId();
     const remoteUser = invitation.remoteIdentity?.uri?.user || 'Unknown';
-    
     // Store session and call info
     this.sessions.set(sessionId, invitation);
     this.callInfos.set(sessionId, {
@@ -637,13 +598,10 @@ export class SipService {
       status: 'ringing',
       startTime: new Date()
     });
-    
     // Set as active session
     this.activeSessionId = sessionId;
-    
     // Start ringtone for incoming call
     this.generateRingtone();
-    
     this.updateCallState(sessionId, 'ringing');
 
     invitation.stateChange.addListener((state: SessionState) => {
@@ -659,7 +617,6 @@ export class SipService {
         case SessionState.Terminated:
           this.stopRingtone(); // Stop ringtone if call was declined/terminated
           this.cleanupAudioForSession(sessionId);
-          
           // Send terminated callback with call info before cleanup
           const callInfo = this.callInfos.get(sessionId);
           if (callInfo) {
@@ -671,13 +628,11 @@ export class SipService {
               activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
             });
           }
-          
           this.sessions.delete(sessionId);
           this.callInfos.delete(sessionId);
           if (this.activeSessionId === sessionId) {
             this.activeSessionId = undefined;
           }
-          
           // Send updated state for remaining calls
           this.updateCallState();
           break;
@@ -690,10 +645,8 @@ export class SipService {
     if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
       this.activeSessionId = sessionId;
       const callInfo = this.callInfos.get(sessionId)!;
-      
       // Manage audio: mute all calls except the new active one
       this.muteAllInactiveCalls();
-      
       this.updateCallState(sessionId, 'connected');
       return true;
     }
@@ -711,7 +664,6 @@ export class SipService {
   async endCall(sessionId?: string): Promise<void> {
     const targetSessionId = sessionId || this.activeSessionId;
     if (!targetSessionId) return;
-    
     const session = this.sessions.get(targetSessionId);
     if (session) {
       try {
@@ -719,7 +671,6 @@ export class SipService {
       } catch (error) {
         console.warn('Error ending call:', error);
       }
-      
       // Cleanup will be handled by the session state listener
     }
   }
@@ -727,8 +678,8 @@ export class SipService {
   async makeCall(number: string): Promise<void> {
     if (!this.userAgent || !this.config) {
       const errorMessage = 'Phone system not ready. Please wait for registration to complete.';
-      this.onCallStateChanged?.({ 
-        status: 'failed', 
+      this.onCallStateChanged?.({
+        status: 'failed',
         errorMessage,
         errorCode: 'NOT_REGISTERED'
       });
@@ -739,9 +690,7 @@ export class SipService {
       const domain = this.config.domain || this.config.server;
       const target = new URI('sip', number, domain);
       const sessionId = this.generateSessionId();
-      
       const session = new Inviter(this.userAgent, target);
-      
       // Store session and call info
       this.sessions.set(sessionId, session);
       this.callInfos.set(sessionId, {
@@ -761,7 +710,6 @@ export class SipService {
 
       // Update UI with connecting state
       this.updateCallState(sessionId);
-      
       session.stateChange.addListener((state: SessionState) => {
         switch (state) {
           case SessionState.Establishing:
@@ -778,7 +726,6 @@ export class SipService {
             this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
             this.cleanupAudioForSession(sessionId);
-            
             // Send terminated callback with call info before cleanup
             const callInfo = this.callInfos.get(sessionId);
             if (callInfo) {
@@ -790,13 +737,11 @@ export class SipService {
                 activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
               });
             }
-            
             this.sessions.delete(sessionId);
             this.callInfos.delete(sessionId);
             if (this.activeSessionId === sessionId) {
               this.activeSessionId = undefined;
             }
-            
             // Send updated state for remaining calls
             this.updateCallState();
             break;
@@ -807,7 +752,6 @@ export class SipService {
     } catch (error: any) {
       let errorMessage = 'Failed to make call.';
       let errorCode = 'CALL_FAILED';
-      
       if (error.message?.includes('486') || error.message?.includes('Busy')) {
         errorMessage = 'The number is busy. Please try again later.';
         errorCode = 'BUSY';
@@ -827,9 +771,8 @@ export class SipService {
         errorMessage = 'Microphone access denied or not available.';
         errorCode = 'MEDIA_ERROR';
       }
-      
-      this.onCallStateChanged?.({ 
-        status: 'failed', 
+      this.onCallStateChanged?.({
+        status: 'failed',
         remoteNumber: number,
         errorMessage,
         errorCode
@@ -846,42 +789,33 @@ export class SipService {
         // Stop any audio feedback when answering
         this.stopRingbackTone();
         this.stopRingtone();
-        
         // Check the current session state
         const currentState = activeSession.state;
         console.log('Answering call, current state:', currentState);
-        
         // If session is already establishing or established, don't try to accept again
         if (currentState === SessionState.Established) {
           console.log('Session already established');
           return;
         }
-        
         // If session is in Establishing state, wait for it to be ready
         if (currentState === SessionState.Establishing) {
           console.log('Session is establishing, waiting for Initial state...');
-          
           let attempts = 0;
           const maxAttempts = 5; // Reduced attempts for faster response
-          
           while (attempts < maxAttempts) {
             await new Promise(resolve => setTimeout(resolve, 50)); // Reduced wait time from 100ms to 50ms
             attempts++;
-            
             const newState = activeSession.state;
             console.log(`Attempt ${attempts}: Session state is ${newState}`);
-            
             // Check if session was terminated while waiting
             if (newState === SessionState.Terminated) {
               throw new Error('Call was terminated before it could be answered');
             }
-            
             // If state changed to established, we're done
             if (newState === SessionState.Established) {
               console.log('Session became established while waiting');
               return;
             }
-            
             // If state is Initial, try to accept
             if (newState === SessionState.Initial) {
               console.log('Session is ready to accept');
@@ -889,19 +823,15 @@ export class SipService {
               return;
             }
           }
-          
           // If we're still in Establishing after all attempts, try to accept anyway
           console.warn('Session still establishing after waiting, attempting accept anyway');
         }
-        
         // Try to accept the session
         await activeSession.accept();
       } catch (error: any) {
         console.error('Failed to answer call:', error);
-        
         let errorMessage = 'Failed to answer call.';
         let errorCode = 'ANSWER_FAILED';
-        
         if (error.message?.includes('Timeout waiting')) {
           errorMessage = 'Call answer timed out. Please try again.';
           errorCode = 'ANSWER_TIMEOUT';
@@ -915,15 +845,13 @@ export class SipService {
           errorMessage = 'Microphone access denied or not available.';
           errorCode = 'MEDIA_ERROR';
         }
-        
         const activeCallInfo = this.getActiveCallInfo();
-        this.onCallStateChanged?.({ 
+        this.onCallStateChanged?.({
           status: 'failed',
           remoteNumber: activeCallInfo?.remoteNumber,
           errorMessage,
           errorCode
         });
-        
         throw new Error(errorMessage);
       }
     }
@@ -933,7 +861,6 @@ export class SipService {
     // Stop ringtone and ringback when hanging up
     this.stopRingtone();
     this.stopRingbackTone();
-    
     const activeSession = this.getActiveSession();
     if (activeSession) {
       try {
@@ -965,7 +892,6 @@ export class SipService {
   async rejectCall(): Promise<void> {
     // Stop ringtone immediately when rejecting
     this.stopRingtone();
-    
     const activeSession = this.getActiveSession();
     if (activeSession) {
       try {
@@ -988,7 +914,6 @@ export class SipService {
   async holdCall(): Promise<void> {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
-    
     if (activeSession && activeSession.state === SessionState.Established && activeCallInfo) {
       try {
         if (!activeCallInfo.isOnHold) {
@@ -1002,14 +927,11 @@ export class SipService {
               }
             });
           }
-          
           // Update call info
           activeCallInfo.isOnHold = true;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
-          
           // Mute the audio for this held call
           this.setAudioForSession(activeCallInfo.sessionId, true);
-          
           console.log('Call placed on hold');
         }
       } catch (error: any) {
@@ -1024,7 +946,6 @@ export class SipService {
   async unholdCall(): Promise<void> {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
-    
     if (activeSession && activeSession.state === SessionState.Established && activeCallInfo) {
       try {
         if (activeCallInfo.isOnHold) {
@@ -1038,14 +959,11 @@ export class SipService {
               }
             });
           }
-          
           // Update call info
           activeCallInfo.isOnHold = false;
           this.callInfos.set(activeCallInfo.sessionId, activeCallInfo);
-          
           // Manage audio: unmute this call and mute all others
           this.muteAllInactiveCalls();
-          
           console.log('Call resumed from hold');
         }
       } catch (error: any) {
@@ -1060,7 +978,6 @@ export class SipService {
   async holdCallBySessionId(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     const callInfo = this.callInfos.get(sessionId);
-    
     if (session && session.state === SessionState.Established && callInfo && !callInfo.isOnHold) {
       try {
         // Mute the microphone to hold call
@@ -1073,19 +990,15 @@ export class SipService {
             }
           });
         }
-        
         // Update call info
         callInfo.isOnHold = true;
-        
         // Mute the audio for this held call
         this.setAudioForSession(sessionId, true);
-        
         // Switch to another active call if available
         const activeCalls = this.getCallInfosArray().filter(c => !c.isOnHold);
         if (activeCalls.length > 0) {
           this.activeSessionId = activeCalls[0].sessionId;
         }
-        
         this.updateCallState();
         console.log('Call placed on hold:', sessionId);
       } catch (error: any) {
@@ -1100,7 +1013,6 @@ export class SipService {
   async unholdCallBySessionId(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     const callInfo = this.callInfos.get(sessionId);
-    
     if (session && session.state === SessionState.Established && callInfo && callInfo.isOnHold) {
       try {
         // Hold all other calls first (only in normal mode, not in conference mode)
@@ -1111,7 +1023,6 @@ export class SipService {
             }
           }
         }
-        
         // Unmute the microphone to resume call
         const pc = session.sessionDescriptionHandler?.peerConnection;
         if (pc) {
@@ -1122,14 +1033,11 @@ export class SipService {
             }
           });
         }
-        
         // Update call info
         callInfo.isOnHold = false;
         this.activeSessionId = sessionId;
-        
         // Manage audio: unmute this call, mute others
         this.muteAllInactiveCalls();
-        
         this.updateCallState();
         console.log('Call resumed:', sessionId);
       } catch (error: any) {
@@ -1143,10 +1051,8 @@ export class SipService {
 
   async enableConferenceMode(): Promise<void> {
     this.isConferenceMode = true;
-    
     // Generate unique conference room ID
     this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    
     // Get all active calls
     const allCalls = this.getCallInfosArray();
     if (allCalls.length < 2) {
@@ -1155,13 +1061,11 @@ export class SipService {
     }
 
     console.log(`Starting FreeSWITCH conference room: ${this.conferenceRoomId}`);
-    
     try {
       // Transfer all calls to the conference room using REFER
       for (const call of allCalls) {
         await this.transferToConference(call.sessionId);
         this.conferenceParticipants.add(call.sessionId);
-        
         // Resume held calls for conference
         if (call.isOnHold) {
           try {
@@ -1172,11 +1076,9 @@ export class SipService {
           }
         }
       }
-      
       // Setup local audio mixing as fallback
       this.setupConferenceMixer();
       this.muteAllInactiveCalls();
-      
       console.log('FreeSWITCH conference started with participants:', Array.from(this.conferenceParticipants));
       this.updateCallState();
     } catch (error) {
@@ -1190,22 +1092,18 @@ export class SipService {
 
   disableConferenceMode(): void {
     this.isConferenceMode = false;
-    
     // Smart conference exit: prioritize incoming calls, disconnect outgoing calls
     const allCalls = this.getCallInfosArray();
     const incomingCalls = allCalls.filter(call => call.direction === 'incoming');
     const outgoingCalls = allCalls.filter(call => call.direction === 'outgoing');
-    
     // If there are incoming calls, keep the first one active and disconnect outgoing calls
     if (incomingCalls.length > 0 && outgoingCalls.length > 0) {
       const primaryCall = incomingCalls[0]; // Prioritize first incoming call
-      
       // Disconnect all outgoing calls
       outgoingCalls.forEach(call => {
         console.log('Disconnecting outgoing call on conference exit:', call.sessionId);
         this.endCall(call.sessionId);
       });
-      
       // Ensure the primary incoming call is active (not on hold)
       if (primaryCall.isOnHold) {
         try {
@@ -1215,20 +1113,16 @@ export class SipService {
           console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
         }
       }
-      
       // Set the primary call as active
       this.activeSessionId = primaryCall.sessionId;
-      
     } else if (allCalls.length > 1) {
       // If no incoming calls or mixed scenario, keep the first call and disconnect others
       const primaryCall = allCalls[0];
       const otherCalls = allCalls.slice(1);
-      
       otherCalls.forEach(call => {
         console.log('Disconnecting secondary call on conference exit:', call.sessionId);
         this.endCall(call.sessionId);
       });
-      
       // Ensure the primary call is active
       if (primaryCall.isOnHold) {
         try {
@@ -1238,17 +1132,13 @@ export class SipService {
           console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
         }
       }
-      
       this.activeSessionId = primaryCall.sessionId;
     }
-    
     // Clear conference participants and room
     this.conferenceParticipants.clear();
     this.conferenceRoomId = undefined;
-    
     // Cleanup conference mixer
     this.cleanupConferenceMixer();
-    
     // Revert to normal mode - only active call unmuted
     this.muteAllInactiveCalls();
     console.log('FreeSWITCH conference ended with smart call management');
@@ -1296,7 +1186,6 @@ export class SipService {
 
     // Add to conference
     this.conferenceParticipants.add(sessionId);
-    
     // Enable conference mode if not already enabled
     if (!this.isConferenceMode) {
       this.isConferenceMode = true;
@@ -1331,7 +1220,6 @@ export class SipService {
 
     // Remove from conference
     this.conferenceParticipants.delete(sessionId);
-    
     // Mute the participant
     this.setAudioForSession(sessionId, true);
 
@@ -1378,20 +1266,16 @@ export class SipService {
     }
 
     const conferenceUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
-    
     try {
       // Send REFER to transfer the call to conference
       console.log(`Transferring session ${sessionId} to conference: ${conferenceUri}`);
-      
       // Check if session has the request method
       if (typeof session.request !== 'function') {
         console.warn(`Session ${sessionId} does not support REFER requests, using client-side mixing`);
         return;
       }
-      
       // Create REFER request manually using session's request method
       const referToURI = new URI('sip', this.conferenceRoomId, this.config.server);
-      
       const referRequest = session.request('REFER', {
         extraHeaders: [
           `Refer-To: ${referToURI.toString()}`,
@@ -1406,7 +1290,6 @@ export class SipService {
           }
         }
       });
-      
       console.log(`Successfully sent REFER for ${sessionId} to conference room ${this.conferenceRoomId}`);
     } catch (error) {
       console.error(`Failed to send REFER for session ${sessionId} to conference:`, error);
@@ -1419,35 +1302,29 @@ export class SipService {
   async createAttendedConference(sessionId1: string, sessionId2: string): Promise<void> {
     const session1 = this.sessions.get(sessionId1);
     const session2 = this.sessions.get(sessionId2);
-    
     if (!session1 || !session2) {
       throw new Error('One or both sessions not found for attended conference');
     }
 
     try {
       console.log(`Creating attended conference between ${sessionId1} and ${sessionId2}`);
-      
       // Generate conference room ID
       this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const conferenceUri = `sip:${this.conferenceRoomId}@${this.config?.server}`;
-      
       // Hold both calls first
       await Promise.all([
         this.holdCallBySessionId(sessionId1),
         this.holdCallBySessionId(sessionId2)
       ]);
-      
       // Transfer both to conference
       await Promise.all([
         this.transferToConference(sessionId1),
         this.transferToConference(sessionId2)
       ]);
-      
       // Enable conference mode
       this.isConferenceMode = true;
       this.conferenceParticipants.add(sessionId1);
       this.conferenceParticipants.add(sessionId2);
-      
       console.log(`Attended conference created: ${this.conferenceRoomId}`);
       this.updateCallState();
     } catch (error) {
@@ -1472,12 +1349,10 @@ export class SipService {
       if (this.userAgent) {
         await this.userAgent.stop();
       }
-      
       // Cleanup all audio
       this.stopRingbackTone();
       this.stopRingtone();
       this.cleanupAllAudioStreams();
-      
       // Close audio context
       if (this.audioContext) {
         await this.audioContext.close();
@@ -1488,7 +1363,6 @@ export class SipService {
     } finally {
       this.userAgent = undefined;
       this.registerer = undefined;
-      
       // Clear all sessions and call info
       this.sessions.clear();
       this.callInfos.clear();
@@ -1503,21 +1377,19 @@ export class SipService {
   getCurrentCallState(): CallState {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
-    
     if (!activeSession || !activeCallInfo) {
       return { status: 'idle' };
     }
-    
     switch (activeSession.state) {
       case SessionState.Initial:
       case SessionState.Establishing:
-        return { 
+        return {
           status: 'connecting',
           remoteNumber: activeCallInfo.remoteNumber,
           direction: activeCallInfo.direction
         };
       case SessionState.Established:
-        return { 
+        return {
           status: 'connected',
           remoteNumber: activeCallInfo.remoteNumber,
           direction: activeCallInfo.direction,

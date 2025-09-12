@@ -247,7 +247,7 @@ export default function Setup() {
                 <div className="font-bold">FreeSWITCH Configuration</div>
                 <div className="text-sm">
                   Default settings configured for FreeSWITCH on 10.254.18.165. 
-                  This configuration works with both SIP.js and SipML5 phone implementations.
+                  This configuration works with the SIP.js phone implementation.
                   Select WS (port 5066) for unencrypted or WSS (port 7443) for encrypted WebSocket connections.
                 </div>
               </div>
