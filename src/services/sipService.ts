@@ -1164,21 +1164,24 @@ export class SipService {
 
     console.log(`Starting FreeSWITCH conference room: ${this.conferenceRoomId}`);
     try {
-      // Transfer all calls to the conference room using REFER
+      // Send INVITE to FreeSWITCH to establish conference (Zoiper-style)
       for (const call of allCalls) {
-        await this.transferToConference(call.sessionId);
-        this.conferenceParticipants.add(call.sessionId);
-        // Resume held calls for conference
-        if (call.isOnHold) {
-          try {
-            await this.unholdCallBySessionId(call.sessionId);
+        const session = this.sessions.get(call.sessionId);
+        if (session && session.state === SessionState.Established) {
+          // Send re-INVITE to move call into conference mode
+          await this.inviteToConference(session, call);
+          this.conferenceParticipants.add(call.sessionId);
+          
+          // Resume held calls for conference
+          if (call.isOnHold) {
+            call.isOnHold = false;
+            this.setAudioForSession(call.sessionId, false);
             console.log('Resumed held call for conference:', call.sessionId);
-          } catch (error) {
-            console.error('Failed to resume held call for conference:', call.sessionId, error);
           }
         }
       }
-      // Setup local audio mixing as fallback
+      
+      // Setup local audio mixing as additional support
       this.setupConferenceMixer();
       this.muteAllInactiveCalls();
       console.log('FreeSWITCH conference started with participants:', Array.from(this.conferenceParticipants));
@@ -1351,7 +1354,42 @@ export class SipService {
     return this.isConferenceMode;
   }
 
-  // Transfer a call to FreeSWITCH conference room using SIP REFER
+  // Send INVITE to establish conference bridge (Zoiper-style)
+  private async inviteToConference(session: any, callInfo: CallInfo): Promise<void> {
+    try {
+      // Use sessionDescriptionHandlerModifiers to maintain current SDP settings
+      const conferenceModifier = (description: RTCSessionDescriptionInit) => {
+        if (description.sdp) {
+          // Keep sendrecv for conference mode
+          description.sdp = description.sdp.replace(/a=inactive/g, 'a=sendrecv');
+          description.sdp = description.sdp.replace(/a=sendonly/g, 'a=sendrecv');
+          description.sdp = description.sdp.replace(/a=recvonly/g, 'a=sendrecv');
+          console.log('Modified SDP for conference: set a=sendrecv');
+        }
+        return Promise.resolve(description);
+      };
+
+      // Send re-INVITE with conference headers (similar to Zoiper)
+      await session.invite({
+        sessionDescriptionHandlerModifiers: [conferenceModifier],
+        requestOptions: {
+          extraHeaders: [
+            'Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE',
+            'Supported: replaces, norefersub, extended-refer, timer, outbound, path',
+            'Allow-Events: presence, kpml, talk, as-feature-event',
+            `X-Conference-Id: ${this.conferenceRoomId}`
+          ]
+        }
+      });
+      
+      console.log(`✅ Sent conference INVITE for session ${callInfo.sessionId} to join conference ${this.conferenceRoomId}`);
+    } catch (error) {
+      console.error(`Failed to send conference INVITE for session ${callInfo.sessionId}:`, error);
+      throw error;
+    }
+  }
+
+  // Transfer a call to FreeSWITCH conference room using SIP REFER (legacy method)
   private async transferToConference(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
