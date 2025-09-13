@@ -589,6 +589,15 @@ export class SipService {
   private handleIncomingCall(invitation: any) {
     const sessionId = this.generateSessionId();
     const remoteUser = invitation.remoteIdentity?.uri?.user || 'Unknown';
+    
+    // Send 180 Ringing response to indicate the phone is ringing
+    try {
+      invitation.progress();
+      console.log('✅ Sent 180 Ringing response for incoming call from:', remoteUser);
+    } catch (error) {
+      console.error('Failed to send 180 Ringing response:', error);
+    }
+    
     // Store session and call info
     this.sessions.set(sessionId, invitation);
     this.callInfos.set(sessionId, {
