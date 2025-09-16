@@ -5,7 +5,9 @@ import {
   SessionState,
   UserAgentOptions,
   URI,
-  Session
+  Session,
+  Subscriber,
+  SubscriptionState
 } from 'sip.js';
 
 export interface SipConfig {
@@ -14,6 +16,7 @@ export interface SipConfig {
   password: string;
   domain?: string;
   protocol: 'ws' | 'wss';
+  moderatorPin?: string;
 }
 
 export interface CallState {
@@ -26,16 +29,44 @@ export interface CallState {
   isOnHold?: boolean;
   sessionId?: string;
   activeCalls?: CallInfo[];
+  isConferenceMode?: boolean;
+  conferenceRoomId?: string;
 }
 
 export interface CallInfo {
   sessionId: string;
   remoteNumber: string;
   isOnHold: boolean;
+  isMuted?: boolean;
   direction: 'incoming' | 'outgoing';
   status: 'connecting' | 'ringing' | 'connected';
   startTime?: Date;
   connectedTime?: Date;
+  isInConference?: boolean;
+}
+
+export interface ConferenceParticipant {
+  entity: string; // Unique participant entity URI
+  displayText?: string; // Display name 
+  state: 'pending' | 'dialing-out' | 'dialing-in' | 'alerting' | 'active' | 'on-hold' | 'disconnecting' | 'disconnected';
+  joinMethod?: 'dialed-in' | 'dialed-out' | 'focus-owner';
+  language?: string;
+  endpoints: ConferenceEndpoint[];
+}
+
+export interface ConferenceEndpoint {
+  entity: string; // Endpoint entity URI
+  displayText?: string;
+  state: 'pending' | 'dialing-out' | 'dialing-in' | 'alerting' | 'active' | 'on-hold' | 'disconnecting' | 'disconnected';
+  joiningMethod?: 'dialed-in' | 'dialed-out' | 'focus-owner';
+  media?: ConferenceMedia[];
+}
+
+export interface ConferenceMedia {
+  id: string;
+  type: 'audio' | 'video' | 'text';
+  status: 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
+  srcId?: string;
 }
 
 export class SipService {
@@ -46,8 +77,11 @@ export class SipService {
   private activeSessionId?: string; // Currently active session
   private isConferenceMode: boolean = false; // Whether multiple calls are in conference
   private conferenceParticipants: Set<string> = new Set(); // Session IDs in conference
+  private conferenceParticipantInfos: Map<string, CallInfo> = new Map(); // Preserved participant info for UI
   private conferenceMixer?: GainNode; // Audio mixer for conference
   private conferenceRoomId?: string; // FreeSWITCH conference room ID
+  private conferenceSubscriber?: Subscriber; // RFC 4575 conference event subscription
+  private conferenceState: Map<string, ConferenceParticipant> = new Map(); // Real-time conference state from NOTIFY
   private config?: SipConfig;
   private onCallStateChanged?: (state: CallState) => void;
   private onRegistrationStateChanged?: (registered: boolean) => void;
@@ -58,6 +92,10 @@ export class SipService {
   private ringbackOscillators: OscillatorNode[] = [];
   private ringbackInterval?: NodeJS.Timeout;
   private ringtoneInterval?: NodeJS.Timeout;
+  private eventListeners: Map<string, ((data?: any) => void)[]> = new Map();
+  private pendingReferTransfers: Set<string> = new Set(); // Track pending REFER transfers
+  private successfulTransfers: Set<string> = new Set(); // Track completed REFER transfers
+  private isMicrophoneMuted: boolean = false; // Track microphone mute state
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -65,6 +103,37 @@ export class SipService {
 
   setRegistrationStateCallback(callback: (registered: boolean) => void) {
     this.onRegistrationStateChanged = callback;
+  }
+
+  // Simple event system for internal events
+  on(eventName: string, callback: (data?: any) => void) {
+    if (!this.eventListeners.has(eventName)) {
+      this.eventListeners.set(eventName, []);
+    }
+    this.eventListeners.get(eventName)!.push(callback);
+  }
+
+  off(eventName: string, callback: (data?: any) => void) {
+    const listeners = this.eventListeners.get(eventName);
+    if (listeners) {
+      const index = listeners.indexOf(callback);
+      if (index > -1) {
+        listeners.splice(index, 1);
+      }
+    }
+  }
+
+  private emitEvent(eventName: string, data?: any) {
+    const listeners = this.eventListeners.get(eventName);
+    if (listeners) {
+      listeners.forEach(callback => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`Error in event listener for ${eventName}:`, error);
+        }
+      });
+    }
   }
 
   private generateSessionId(): string {
@@ -87,19 +156,56 @@ export class SipService {
   private updateCallState(sessionId?: string, status?: CallState['status']) {
     const activeCalls = this.getCallInfosArray();
     if (activeCalls.length === 0) {
-      this.onCallStateChanged?.({
-        status: 'idle',
-        activeCalls: []
-      });
+      // Don't go to idle if we're in conference mode - conference controls should remain visible
+      if (this.isConferenceMode) {
+        console.log('No active calls but in conference mode - keeping conference controls visible');
+        this.onCallStateChanged?.({
+          status: 'connected', // Keep as connected to show conference controls
+          activeCalls: [],
+          isConferenceMode: this.isConferenceMode,
+          conferenceRoomId: this.conferenceRoomId
+        });
+      } else {
+        debugger; // Conference controls about to be hidden - going to idle
+        this.onCallStateChanged?.({
+          status: 'idle',
+          activeCalls: []
+        });
+      }
       return;
     }
 
     // If no specific session, use active session or first available
-    const targetSessionId = sessionId || this.activeSessionId || activeCalls[0].sessionId;
+    const targetSessionId = sessionId || this.activeSessionId || activeCalls[0]?.sessionId;
+    
+    // Special case: In conference mode without active calls but need to maintain UI
+    if (this.isConferenceMode && !targetSessionId) {
+      console.log('Conference mode active but no target session - maintaining conference UI state');
+      this.onCallStateChanged?.({
+        status: 'connected',
+        activeCalls: activeCalls,
+        isConferenceMode: this.isConferenceMode,
+        conferenceRoomId: this.conferenceRoomId
+      });
+      return;
+    }
+    
     const callInfo = this.callInfos.get(targetSessionId);
     const session = this.sessions.get(targetSessionId);
 
-    if (!callInfo || !session) return;
+    if (!callInfo || !session) {
+      // In conference mode, still try to maintain UI even if individual sessions are gone
+      if (this.isConferenceMode) {
+        console.log('Conference mode active but callInfo/session not found - maintaining conference UI');
+        this.onCallStateChanged?.({
+          status: 'connected',
+          activeCalls: activeCalls,
+          isConferenceMode: this.isConferenceMode,
+          conferenceRoomId: this.conferenceRoomId
+        });
+      }
+      return;
+    }
 
     // Use provided status or determine from session state
     let finalStatus: CallState['status'] = status || 'connected';
@@ -590,6 +696,66 @@ export class SipService {
     const sessionId = this.generateSessionId();
     const remoteUser = invitation.remoteIdentity?.uri?.user || 'Unknown';
     
+    // Check if this is a conference-related call that should be auto-accepted
+    const isConferenceRelated = 
+      (this.isConferenceMode && remoteUser === this.config?.username) || // Call from our own extension during conference
+      (this.isConferenceMode && remoteUser === this.conferenceRoomId) || // Call from conference room
+      (this.isConferenceMode && /^30\d{2}$/.test(remoteUser)) || // Any conference room (3000-3999)
+      (this.isConferenceMode && remoteUser === '3000'); // Default conference room
+    
+    // Also check if we already have a session with a similar ID (outgoing conference join)
+    const existingConferenceSession = Array.from(this.sessions.entries())
+      .find(([id, session]) => id.startsWith('conf_session_') && id.includes(remoteUser));
+    
+    if (isConferenceRelated || existingConferenceSession) {
+      console.log(`🎯 Auto-accepting conference-related call from ${remoteUser} (conference mode: ${this.isConferenceMode})`);
+      
+      // Auto-accept conference-related calls immediately
+      try {
+        const answerOptions = {
+          sessionDescriptionHandlerOptions: {
+            constraints: { audio: true, video: false }
+          }
+        };
+        
+        invitation.accept(answerOptions);
+        
+        // Use existing session ID if we have an outgoing conference session, otherwise create new
+        const confSessionId = existingConferenceSession ? existingConferenceSession[0] : `conf_auto_${sessionId}`;
+        
+        // Store or replace the session
+        this.sessions.set(confSessionId, invitation);
+        this.conferenceParticipants.add(confSessionId);
+        
+        // Setup audio and handle state changes
+        invitation.stateChange.addListener((state: SessionState) => {
+          if (state === SessionState.Established) {
+            console.log(`✅ Conference-related call established from ${remoteUser}`);
+            this.setupAudioStreams(invitation, confSessionId);
+            
+            // Force UI update to show conference controls
+            this.updateCallState();
+            this.emitEvent('conferenceStateChanged', {
+              participants: Array.from(this.conferenceParticipants),
+              isConferenceMode: this.isConferenceMode,
+              conferenceRoomId: this.conferenceRoomId
+            });
+          } else if (state === SessionState.Terminated) {
+            console.log(`Conference-related call terminated from ${remoteUser}`);
+            this.sessions.delete(confSessionId);
+            this.conferenceParticipants.delete(confSessionId);
+          }
+        });
+        
+        console.log(`✅ Auto-accepted conference call from ${remoteUser}, session ID: ${confSessionId}`);
+        return; // Don't process as regular incoming call
+      } catch (error) {
+        console.error('Failed to auto-accept conference call:', error);
+        // Fall through to regular handling if auto-accept fails
+      }
+    }
+    
+    // Regular incoming call handling
     // Send 180 Ringing response to indicate the phone is ringing
     try {
       invitation.progress();
@@ -627,6 +793,33 @@ export class SipService {
         case SessionState.Terminated:
           this.stopRingtone(); // Stop ringtone if call was declined/terminated
           this.cleanupAudioForSession(sessionId);
+          
+          // Handle conference participant leaving
+          if (this.isConferenceMode && this.conferenceParticipants.has(sessionId)) {
+            const callInfo = this.callInfos.get(sessionId);
+            const wasTransferred = callInfo?.isInConference && this.successfulTransfers.has(sessionId);
+            
+            if (wasTransferred) {
+              console.log(`📞 Session ${sessionId} terminated after REFER transfer - keeping in conference as transferred participant`);
+              // Don't remove from conference participants - it was successfully transferred
+              // The session terminated because FreeSWITCH took over the call
+            } else {
+              console.log(`Conference participant ${sessionId} terminated, removing from conference`);
+              this.conferenceParticipants.delete(sessionId);
+              
+              // Check if only the conference room session remains (no real participants)
+              // Conference room session has ID like "conf_session_3000"
+              const realParticipants = Array.from(this.conferenceParticipants).filter(
+                id => !id.startsWith('conf_session_')
+              );
+              
+              if (realParticipants.length === 0) {
+                console.log('⚠️ All real participants left conference (only conference room session remains), ending conference...');
+                this.disableConferenceMode();
+              }
+            }
+          }
+          
           // Send terminated callback with call info before cleanup
           const callInfo = this.callInfos.get(sessionId);
           if (callInfo) {
@@ -638,10 +831,32 @@ export class SipService {
               activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
             });
           }
+          // Clean up session
           this.sessions.delete(sessionId);
-          this.callInfos.delete(sessionId);
+          
+          // For transferred participants, keep callInfo but mark as transferred
+          const currentCallInfo = this.callInfos.get(sessionId);
+          const wasTransferred = currentCallInfo?.isInConference && this.successfulTransfers.has(sessionId);
+          
+          if (wasTransferred) {
+            console.log(`📞 Keeping callInfo for transferred participant ${sessionId} (${currentCallInfo?.remoteNumber})`);
+            // Keep the callInfo for UI display, but mark it as transferred
+            if (currentCallInfo) {
+              currentCallInfo.status = 'connected'; // Keep showing as connected in conference
+            }
+          } else {
+            // Regular session termination - remove callInfo
+            this.callInfos.delete(sessionId);
+          }
+          
           if (this.activeSessionId === sessionId) {
-            this.activeSessionId = undefined;
+            // Don't clear activeSessionId if we're in conference mode - need it for UI state
+            if (!this.isConferenceMode) {
+              debugger; // About to clear activeSessionId - may hide conference controls
+              this.activeSessionId = undefined;
+            } else {
+              console.log(`📞 Keeping activeSessionId in conference mode to maintain UI state`);
+            }
           }
           // Send updated state for remaining calls
           this.updateCallState();
@@ -651,10 +866,33 @@ export class SipService {
   }
 
   // Multi-call management methods
-  switchToCall(sessionId: string): boolean {
+  async switchToCall(sessionId: string): Promise<boolean> {
     if (this.sessions.has(sessionId) && this.callInfos.has(sessionId)) {
-      this.activeSessionId = sessionId;
-      const callInfo = this.callInfos.get(sessionId)!;
+      const previousActiveSessionId = this.activeSessionId;
+      
+      try {
+        // Put previous active call on hold before switching (wait for completion)
+        if (previousActiveSessionId && previousActiveSessionId !== sessionId) {
+          console.log(`📞 Automatically putting previous call ${previousActiveSessionId} on hold when switching to ${sessionId}`);
+          await this.holdCallBySessionId(previousActiveSessionId);
+          console.log(`✅ Previous call ${previousActiveSessionId} successfully put on hold`);
+        }
+        
+        this.activeSessionId = sessionId;
+        const callInfo = this.callInfos.get(sessionId)!;
+        
+        // If the call we're switching to is on hold, resume it (wait for completion)
+        if (callInfo.isOnHold) {
+          console.log(`📞 Resuming call ${sessionId} from hold`);
+          await this.unholdCallBySessionId(sessionId);
+          console.log(`✅ Call ${sessionId} successfully resumed from hold`);
+        }
+        
+      } catch (error) {
+        console.warn('Error during call switching:', error);
+        // Continue with the switch even if hold/unhold operations fail
+      }
+      
       // Manage audio: mute all calls except the new active one
       this.muteAllInactiveCalls();
       this.updateCallState(sessionId, 'connected');
@@ -671,13 +909,68 @@ export class SipService {
     return this.callInfos.get(sessionId);
   }
 
+  getActiveSessionId(): string | undefined {
+    return this.activeSessionId;
+  }
+
   async endCall(sessionId?: string): Promise<void> {
     const targetSessionId = sessionId || this.activeSessionId;
     if (!targetSessionId) return;
     const session = this.sessions.get(targetSessionId);
     if (session) {
       try {
-        await session.bye();
+        console.log(`📞 Ending call for session ${targetSessionId}, state: ${session.state}, type: ${session.constructor?.name}`);
+        
+        // Stop any ringback or ringtone immediately when ending call
+        this.stopRingbackTone();
+        this.stopRingtone();
+        
+        // Check session state and type to determine correct method
+        if (session.state === SessionState.Established) {
+          // For established sessions, use bye()
+          console.log('📞 Using bye() for established session');
+          if (session.bye) {
+            await session.bye();
+            console.log('✅ BYE sent successfully');
+          }
+        } else if (session.state === SessionState.Initial || session.state === SessionState.Establishing) {
+          // For non-established sessions, check if it's an incoming call
+          if (session.constructor?.name === 'Invitation' || session.reject) {
+            console.log('📞 Using reject() for non-established incoming call');
+            if (session.reject) {
+              await session.reject();
+              console.log('✅ Call rejected successfully');
+            } else if (session.terminate) {
+              await session.terminate();
+            }
+          } else if (session.constructor?.name === 'Inviter' || session.cancel) {
+            // For outgoing calls (Inviter) that haven't connected yet, use cancel()
+            console.log('📞 Using cancel() for non-established outgoing call');
+            if (session.cancel) {
+              await session.cancel();
+              console.log('✅ Outgoing call cancelled successfully');
+            } else if (session.terminate) {
+              // Fallback to terminate if cancel is not available
+              await session.terminate();
+              console.log('✅ Session terminated');
+            }
+          } else {
+            // Final fallback for unknown session types
+            console.log('📞 Unknown session type, using terminate()');
+            if (session.terminate) {
+              await session.terminate();
+              console.log('✅ Session terminated');
+            }
+          }
+        } else if (session.state === SessionState.Terminated) {
+          console.log('📞 Session already terminated');
+        } else {
+          // Fallback for unknown states
+          console.log('📞 Unknown state, using terminate()');
+          if (session.terminate) {
+            await session.terminate();
+          }
+        }
       } catch (error) {
         console.warn('Error ending call:', error);
       }
@@ -712,17 +1005,28 @@ export class SipService {
         startTime: new Date()
       });
 
+      // If there's already an active call, put it on hold before making new call
+      if (this.activeSessionId) {
+        const previousActiveSessionId = this.activeSessionId;
+        console.log(`📞 Automatically putting current call ${previousActiveSessionId} on hold before making new call to ${number}`);
+        this.holdCallBySessionId(previousActiveSessionId).catch(error => {
+          console.warn('Failed to automatically hold current call:', error);
+        });
+      }
+
       // Set as active session
       this.activeSessionId = sessionId;
 
       // Start ringback tone for outgoing call
       this.generateRingbackTone();
 
-      // Update UI with connecting state
-      this.updateCallState(sessionId);
+      // Update UI with connecting state - explicitly pass 'connecting' to ensure UI shows Hang Up button
+      this.updateCallState(sessionId, 'connecting');
       session.stateChange.addListener((state: SessionState) => {
+        console.log(`📞 Call state change for ${number} (${sessionId}): ${state}`);
         switch (state) {
           case SessionState.Establishing:
+            console.log(`🔄 Call ${sessionId} is establishing...`);
             this.updateCallState(sessionId, 'connecting');
             break;
           case SessionState.Established:
@@ -733,12 +1037,40 @@ export class SipService {
             this.updateCallState(sessionId, 'connected');
             break;
           case SessionState.Terminated:
+            console.log(`📞 Call terminated for ${number} (${sessionId})`);
             this.stopRingbackTone(); // Stop any audio feedback
             this.stopRingtone();
             this.cleanupAudioForSession(sessionId);
+            
+            // Handle conference participant leaving
+            if (this.isConferenceMode && this.conferenceParticipants.has(sessionId)) {
+              const callInfo = this.callInfos.get(sessionId);
+              const wasTransferred = callInfo?.isInConference && this.successfulTransfers.has(sessionId);
+              
+              if (wasTransferred) {
+                console.log(`📞 Session ${sessionId} terminated after REFER transfer - keeping in conference as transferred participant`);
+                // Don't remove from conference participants - it was successfully transferred
+                // The session terminated because FreeSWITCH took over the call
+              } else {
+                console.log(`Conference participant ${sessionId} terminated, removing from conference`);
+                this.conferenceParticipants.delete(sessionId);
+                
+                // Check if only the conference room session remains (no real participants)
+                const realParticipants = Array.from(this.conferenceParticipants).filter(
+                  id => !id.startsWith('conf_session_')
+                );
+                
+                if (realParticipants.length === 0) {
+                  console.log('⚠️ All real participants left conference, but keeping conference controls visible');
+                  // Don't auto-disable conference mode - let user manually end it
+                }
+              }
+            }
+            
             // Send terminated callback with call info before cleanup
             const callInfo = this.callInfos.get(sessionId);
             if (callInfo) {
+              console.log(`📞 Sending idle state for terminated call ${sessionId}`);
               this.onCallStateChanged?.({
                 status: 'idle',
                 remoteNumber: callInfo.remoteNumber,
@@ -747,10 +1079,34 @@ export class SipService {
                 activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
               });
             }
+            
+            console.log(`📞 Cleaning up session ${sessionId}`);
             this.sessions.delete(sessionId);
-            this.callInfos.delete(sessionId);
+            
+            // For transferred participants, keep callInfo but mark as transferred
+            const currentCallInfo = this.callInfos.get(sessionId);
+            const wasTransferred = currentCallInfo?.isInConference && this.successfulTransfers.has(sessionId);
+            
+            if (wasTransferred) {
+              console.log(`📞 Keeping callInfo for transferred participant ${sessionId} (${currentCallInfo?.remoteNumber})`);
+              // Keep the callInfo for UI display, but mark it as transferred
+              if (currentCallInfo) {
+                currentCallInfo.status = 'connected'; // Keep showing as connected in conference
+              }
+            } else {
+              // Regular session termination - remove callInfo
+              this.callInfos.delete(sessionId);
+            }
+            
             if (this.activeSessionId === sessionId) {
-              this.activeSessionId = undefined;
+              console.log(`📞 Clearing activeSessionId (was ${sessionId})`);
+              // Don't clear activeSessionId if we're in conference mode - need it for UI state
+              if (!this.isConferenceMode) {
+                debugger; // About to clear activeSessionId - may hide conference controls
+                this.activeSessionId = undefined;
+              } else {
+                console.log(`📞 Keeping activeSessionId in conference mode to maintain UI state`);
+              }
             }
             // Send updated state for remaining calls
             this.updateCallState();
@@ -758,8 +1114,11 @@ export class SipService {
         }
       });
 
+      console.log(`📞 Sending INVITE for call to ${number} (session: ${sessionId})`);
       await session.invite();
+      console.log(`✅ INVITE sent successfully for ${number}`);
     } catch (error: any) {
+      console.error(`❌ Failed to send INVITE for ${number}:`, error);
       let errorMessage = 'Failed to make call.';
       let errorCode = 'CALL_FAILED';
       if (error.message?.includes('486') || error.message?.includes('Busy')) {
@@ -796,6 +1155,22 @@ export class SipService {
     const activeSession = this.getActiveSession();
     if (activeSession && activeSession.accept) {
       try {
+        // If there are other active calls, put them on hold before answering this one
+        const otherActiveCalls = this.getAllActiveCalls().filter(call => 
+          call.sessionId !== this.activeSessionId && 
+          call.status === 'connected' && 
+          !call.isOnHold
+        );
+        
+        if (otherActiveCalls.length > 0) {
+          console.log(`📞 Automatically putting ${otherActiveCalls.length} other calls on hold before answering incoming call`);
+          for (const call of otherActiveCalls) {
+            this.holdCallBySessionId(call.sessionId).catch(error => {
+              console.warn(`Failed to automatically hold call ${call.sessionId}:`, error);
+            });
+          }
+        }
+
         // Stop any audio feedback when answering
         this.stopRingbackTone();
         this.stopRingtone();
@@ -868,33 +1243,174 @@ export class SipService {
   }
 
   async hangup(): Promise<void> {
+    console.log(`📞 Hangup requested, activeSessionId: ${this.activeSessionId}`);
+    
     // Stop ringtone and ringback when hanging up
     this.stopRingtone();
     this.stopRingbackTone();
+    
     const activeSession = this.getActiveSession();
+    console.log(`📞 Active session:`, activeSession ? `Found (state: ${activeSession.state})` : 'Not found');
+    
     if (activeSession) {
       try {
-        switch (activeSession.state) {
-          case SessionState.Initial:
-          case SessionState.Establishing:
-            if (activeSession.cancel) {
-              await activeSession.cancel();
-            }
-            break;
-          case SessionState.Established:
-            if (activeSession.bye) {
-              await activeSession.bye();
-            }
-            break;
-          default:
-            if (activeSession.terminate) {
-              await activeSession.terminate();
-            }
-            break;
+        console.log(`📞 Attempting to hangup session in state: ${activeSession.state}`);
+        console.log(`📞 Session type:`, activeSession.constructor?.name);
+        
+        // For Inviter sessions (outgoing calls)
+        if (activeSession.constructor?.name === 'Inviter' || activeSession.cancel) {
+          switch (activeSession.state) {
+            case SessionState.Initial:
+            case SessionState.Establishing:
+              console.log(`📞 Using cancel() for non-established session`);
+              if (activeSession.cancel) {
+                await activeSession.cancel();
+                console.log(`✅ Call canceled successfully`);
+              } else {
+                console.warn(`⚠️ No cancel method available, trying terminate`);
+                if (activeSession.terminate) {
+                  await activeSession.terminate();
+                }
+              }
+              break;
+            case SessionState.Established:
+              console.log(`📞 Using bye() for established session`);
+              if (activeSession.bye) {
+                await activeSession.bye();
+                console.log(`✅ BYE sent successfully`);
+              }
+              break;
+            case SessionState.Terminated:
+              console.log(`📞 Session already terminated`);
+              break;
+            default:
+              console.log(`📞 Unknown state, using terminate()`);
+              if (activeSession.terminate) {
+                await activeSession.terminate();
+                console.log(`✅ Session terminated`);
+              }
+              break;
+          }
+        }
+        // For Invitation sessions (incoming calls)
+        else if (activeSession.constructor?.name === 'Invitation' || activeSession.reject) {
+          switch (activeSession.state) {
+            case SessionState.Initial:
+            case SessionState.Establishing:
+              console.log(`📞 Using reject() for non-established incoming call`);
+              if (activeSession.reject) {
+                await activeSession.reject();
+                console.log(`✅ Call rejected successfully`);
+              } else if (activeSession.terminate) {
+                await activeSession.terminate();
+              }
+              break;
+            case SessionState.Established:
+              console.log(`📞 Using bye() for established incoming call`);
+              if (activeSession.bye) {
+                await activeSession.bye();
+                console.log(`✅ BYE sent successfully`);
+              }
+              break;
+            case SessionState.Terminated:
+              console.log(`📞 Session already terminated`);
+              break;
+            default:
+              console.log(`📞 Unknown state, using terminate()`);
+              if (activeSession.terminate) {
+                await activeSession.terminate();
+                console.log(`✅ Session terminated`);
+              }
+              break;
+          }
+        }
+        // Fallback for other session types
+        else {
+          console.log(`📞 Generic session handling`);
+          if (activeSession.state === SessionState.Established && activeSession.bye) {
+            await activeSession.bye();
+          } else if (activeSession.cancel) {
+            await activeSession.cancel();
+          } else if (activeSession.terminate) {
+            await activeSession.terminate();
+          }
         }
       } catch (error: any) {
         console.error('Failed to hangup:', error);
         // Don't throw here, just log - hangup should always succeed from user perspective
+      }
+    } else {
+      console.log(`📞 No active session to hang up`);
+    }
+  }
+
+  // Alternative simpler hangup that tries methods in order
+  async simpleHangup(sessionId?: string): Promise<void> {
+    const targetSessionId = sessionId || this.activeSessionId;
+    if (!targetSessionId) {
+      console.log('No session to hang up');
+      return;
+    }
+
+    const session = this.sessions.get(targetSessionId);
+    if (!session) {
+      console.log(`Session ${targetSessionId} not found`);
+      return;
+    }
+
+    console.log(`📞 Simple hangup for session ${targetSessionId} (state: ${session.state})`);
+    
+    // Try methods in order of preference based on state
+    try {
+      // First, check if it's already terminated
+      if (session.state === SessionState.Terminated) {
+        console.log('Session already terminated');
+        return;
+      }
+      
+      // For established sessions, use bye()
+      if (session.state === SessionState.Established) {
+        if (session.bye) {
+          console.log('Using bye() for established session');
+          await session.bye();
+          return;
+        }
+      }
+      
+      // For non-established outgoing calls (Inviter), use cancel()
+      if (session.state === SessionState.Initial || session.state === SessionState.Establishing) {
+        if (session.cancel) {
+          console.log('Using cancel() for non-established session');
+          await session.cancel();
+          return;
+        }
+        
+        // For incoming calls that haven't been answered, use reject()
+        if (session.reject) {
+          console.log('Using reject() for unanswered incoming call');
+          await session.reject();
+          return;
+        }
+      }
+      
+      // Fallback to terminate() if available
+      if (session.terminate) {
+        console.log('Using terminate() as fallback');
+        await session.terminate();
+        return;
+      }
+      
+      console.warn('No suitable method found to end the session');
+    } catch (error) {
+      console.error(`Error during hangup:`, error);
+      // Try terminate as last resort
+      if (session.terminate) {
+        try {
+          console.log('Attempting terminate() after error');
+          await session.terminate();
+        } catch (terminateError) {
+          console.error('Terminate also failed:', terminateError);
+        }
       }
     }
   }
@@ -987,6 +1503,20 @@ export class SipService {
   }
 
   async holdCallBySessionId(sessionId: string): Promise<void> {
+    // Check if this is a conference participant - handle specially since sessions are terminated after REFER
+    if (this.isConferenceMode && this.conferenceParticipantInfos.has(sessionId)) {
+      const participantInfo = this.conferenceParticipantInfos.get(sessionId);
+      if (participantInfo && !participantInfo.isOnHold) {
+        participantInfo.isOnHold = true;
+        this.conferenceParticipantInfos.set(sessionId, participantInfo);
+        console.log(`✅ Tracked hold state locally for conference participant ${sessionId}`);
+        this.updateCallState();
+        return;
+      } else {
+        throw new Error('Conference participant not found or already on hold');
+      }
+    }
+
     const session = this.sessions.get(sessionId);
     const callInfo = this.callInfos.get(sessionId);
     if (session && session.state === SessionState.Established && callInfo && !callInfo.isOnHold) {
@@ -1071,6 +1601,20 @@ export class SipService {
   }
 
   async unholdCallBySessionId(sessionId: string): Promise<void> {
+    // Check if this is a conference participant - handle specially since sessions are terminated after REFER
+    if (this.isConferenceMode && this.conferenceParticipantInfos.has(sessionId)) {
+      const participantInfo = this.conferenceParticipantInfos.get(sessionId);
+      if (participantInfo && participantInfo.isOnHold) {
+        participantInfo.isOnHold = false;
+        this.conferenceParticipantInfos.set(sessionId, participantInfo);
+        console.log(`✅ Tracked unhold state locally for conference participant ${sessionId}`);
+        this.updateCallState();
+        return;
+      } else {
+        throw new Error('Conference participant not found or not on hold');
+      }
+    }
+
     const session = this.sessions.get(sessionId);
     const callInfo = this.callInfos.get(sessionId);
     if (session && session.state === SessionState.Established && callInfo && callInfo.isOnHold) {
@@ -1160,10 +1704,91 @@ export class SipService {
     }
   }
 
+  async muteMicrophone(): Promise<void> {
+    if (this.isMicrophoneMuted) {
+      console.log('Microphone is already muted');
+      return;
+    }
+
+    try {
+      // Mute audio tracks in all active sessions
+      for (const sessionId of this.sessions.keys()) {
+        const session = this.sessions.get(sessionId);
+        if (session && session.sessionDescriptionHandler) {
+          const pc = session.sessionDescriptionHandler.peerConnection;
+          if (pc) {
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = false;
+              }
+            });
+          }
+        }
+      }
+
+      this.isMicrophoneMuted = true;
+      console.log('Microphone muted');
+    } catch (error) {
+      console.error('Failed to mute microphone:', error);
+      throw new Error('Failed to mute microphone');
+    }
+  }
+
+  async unmuteMicrophone(): Promise<void> {
+    if (!this.isMicrophoneMuted) {
+      console.log('Microphone is already unmuted');
+      return;
+    }
+
+    try {
+      // Unmute audio tracks in all active sessions
+      for (const sessionId of this.sessions.keys()) {
+        const session = this.sessions.get(sessionId);
+        if (session && session.sessionDescriptionHandler) {
+          const pc = session.sessionDescriptionHandler.peerConnection;
+          if (pc) {
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = true;
+              }
+            });
+          }
+        }
+      }
+
+      this.isMicrophoneMuted = false;
+      console.log('Microphone unmuted');
+    } catch (error) {
+      console.error('Failed to unmute microphone:', error);
+      throw new Error('Failed to unmute microphone');
+    }
+  }
+
+  isMicMuted(): boolean {
+    return this.isMicrophoneMuted;
+  }
+
   async enableConferenceMode(): Promise<void> {
+    // Allocate a conference room from the pool BEFORE setting conference mode
+    // This ensures we have the room ID before any UI updates
+    const allocatedRoom = await this.allocateConferenceRoom('3000');
+    if (!allocatedRoom) {
+      // Try auto-allocation if 3000 is taken
+      const autoRoom = await this.allocateConferenceRoom();
+      if (!autoRoom) {
+        console.error('Failed to allocate conference room');
+        throw new Error('No conference rooms available');
+      }
+      this.conferenceRoomId = autoRoom;
+    } else {
+      this.conferenceRoomId = allocatedRoom;
+    }
+    
+    // Now that we have the room ID, enable conference mode
     this.isConferenceMode = true;
-    // Generate unique conference room ID
-    this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    
     // Get all active calls
     const allCalls = this.getCallInfosArray();
     if (allCalls.length < 2) {
@@ -1172,91 +1797,209 @@ export class SipService {
     }
 
     console.log(`Starting FreeSWITCH conference room: ${this.conferenceRoomId}`);
-    try {
-      // Send INVITE to FreeSWITCH to establish conference (Zoiper-style)
-      for (const call of allCalls) {
-        const session = this.sessions.get(call.sessionId);
-        if (session && session.state === SessionState.Established) {
-          // Send re-INVITE to move call into conference mode
-          await this.inviteToConference(session, call);
-          this.conferenceParticipants.add(call.sessionId);
-          
-          // Resume held calls for conference
-          if (call.isOnHold) {
-            call.isOnHold = false;
-            this.setAudioForSession(call.sessionId, false);
-            console.log('Resumed held call for conference:', call.sessionId);
-          }
+    
+    // Take all participants off hold and unmute them before adding to conference
+    for (const call of allCalls) {
+      console.log(`🔊 Preparing ${call.sessionId} (${call.remoteNumber}) for conference: taking off hold and unmuting`);
+      
+      // Take participant off hold if they are on hold
+      if (call.isOnHold) {
+        try {
+          console.log(`📞 Taking ${call.sessionId} off hold before conference`);
+          await this.unholdCallBySessionId(call.sessionId);
+        } catch (error) {
+          console.warn(`Failed to unhold ${call.sessionId} before conference:`, error);
         }
       }
       
-      // Setup local audio mixing as additional support
-      this.setupConferenceMixer();
-      this.muteAllInactiveCalls();
-      console.log('FreeSWITCH conference started with participants:', Array.from(this.conferenceParticipants));
-      this.updateCallState();
+      // Unmute audio tracks
+      const session = this.sessions.get(call.sessionId);
+      if (session) {
+        const sessionDescriptionHandler = session.sessionDescriptionHandler;
+        if (sessionDescriptionHandler) {
+          const pc = sessionDescriptionHandler.peerConnection;
+          if (pc) {
+            const senders = pc.getSenders();
+            senders.forEach((sender: RTCRtpSender) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                sender.track.enabled = true;
+                console.log(`🔊 Unmuted audio track for ${call.sessionId} (${call.remoteNumber})`);
+              }
+            });
+          }
+        }
+      }
+    }
+    
+    // Save participant info for UI (this will survive session termination)
+    this.conferenceParticipantInfos.clear();
+    for (const call of allCalls) {
+      const callInfoCopy: CallInfo = {
+        ...call,
+        isInConference: true,
+        status: 'connected',
+        isMuted: false,  // Ensure all participants start unmuted in conference
+        isOnHold: false  // Ensure no participants are on hold in conference
+      };
+      this.conferenceParticipantInfos.set(call.sessionId, callInfoCopy);
+      this.conferenceParticipants.add(call.sessionId);
+      console.log(`📋 Saved conference participant info for ${call.sessionId} (${call.remoteNumber}) - starting unmuted`);
+    }
+    
+    // IMMEDIATELY show conference controls when user clicks Conference All
+    console.log('📺 Enabling conference controls immediately upon Conference All click');
+    this.updateCallState();
+    this.emitEvent('conferenceStateChanged', {
+      participants: Array.from(this.conferenceParticipants),
+      isConferenceMode: this.isConferenceMode,
+      conferenceRoomId: this.conferenceRoomId
+    });
+    
+    try {
+      // Phase 1: Initiator (A) joins conference room FIRST
+      console.log(`🎯 Initiator (A) joining conference room ${this.conferenceRoomId} first`);
+      await this.joinConferenceRoom(this.conferenceRoomId);
+      
+      // Phase 2: Transfer other participants (B and C) to conference via REFER
+      console.log('📨 Transferring other participants to conference via REFER');
+      
+      // Clear previous transfer tracking
+      this.pendingReferTransfers.clear();
+      this.successfulTransfers.clear();
+      
+      for (const call of allCalls) {
+        try {
+          // Track this REFER transfer
+          this.pendingReferTransfers.add(call.sessionId);
+          
+          // Use proper REFER to transfer calls to conference
+          console.log(`Transferring call ${call.sessionId} (${call.remoteNumber}) to conference via REFER`);
+          await this.transferCallToConference(call.sessionId);
+          
+          console.log(`📨 REFER sent for ${call.remoteNumber}, waiting for NOTIFY confirmation...`);
+          
+        } catch (error) {
+          console.error(`Failed to transfer ${call.sessionId} to conference:`, error);
+          // Remove from pending if it failed to send
+          this.pendingReferTransfers.delete(call.sessionId);
+        }
+      }
+      
+      // Wait for transfers to complete
+      console.log(`⏳ Waiting for REFER transfers to complete...`);
+      await this.waitForReferTransfers();
+      
     } catch (error) {
       console.error('Failed to start FreeSWITCH conference:', error);
-      // Fallback to client-side mixing
-      this.setupConferenceMixer();
-      this.muteAllInactiveCalls();
-      console.log('Falling back to client-side conference mixing');
     }
+    
+    // ALWAYS setup conference regardless of REFER success/failure
+    // FreeSWITCH may have succeeded even if we didn't get proper NOTIFY responses
+    console.log('✅ FreeSWITCH conference process completed, showing permanent conference controls');
+    
+    // Don't setup client-side mixer or mute calls - FreeSWITCH handles audio mixing
+    // this.setupConferenceMixer();
+    // this.muteAllInactiveCalls();
+    
+    // Make conference controls permanently visible
+    this.updateCallState();
+    this.emitEvent('conferenceStateChanged', {
+      participants: Array.from(this.conferenceParticipants),
+      isConferenceMode: this.isConferenceMode,
+      conferenceRoomId: this.conferenceRoomId
+    });
   }
 
-  disableConferenceMode(): void {
-    this.isConferenceMode = false;
-    // Smart conference exit: prioritize incoming calls, disconnect outgoing calls
-    const allCalls = this.getCallInfosArray();
-    const incomingCalls = allCalls.filter(call => call.direction === 'incoming');
-    const outgoingCalls = allCalls.filter(call => call.direction === 'outgoing');
-    // If there are incoming calls, keep the first one active and disconnect outgoing calls
-    if (incomingCalls.length > 0 && outgoingCalls.length > 0) {
-      const primaryCall = incomingCalls[0]; // Prioritize first incoming call
-      // Disconnect all outgoing calls
-      outgoingCalls.forEach(call => {
-        console.log('Disconnecting outgoing call on conference exit:', call.sessionId);
-        this.endCall(call.sessionId);
-      });
-      // Ensure the primary incoming call is active (not on hold)
-      if (primaryCall.isOnHold) {
-        try {
-          this.unholdCallBySessionId(primaryCall.sessionId);
-          console.log('Resumed primary incoming call on conference exit:', primaryCall.sessionId);
-        } catch (error) {
-          console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
-        }
-      }
-      // Set the primary call as active
-      this.activeSessionId = primaryCall.sessionId;
-    } else if (allCalls.length > 1) {
-      // If no incoming calls or mixed scenario, keep the first call and disconnect others
-      const primaryCall = allCalls[0];
-      const otherCalls = allCalls.slice(1);
-      otherCalls.forEach(call => {
-        console.log('Disconnecting secondary call on conference exit:', call.sessionId);
-        this.endCall(call.sessionId);
-      });
-      // Ensure the primary call is active
-      if (primaryCall.isOnHold) {
-        try {
-          this.unholdCallBySessionId(primaryCall.sessionId);
-          console.log('Resumed primary call on conference exit:', primaryCall.sessionId);
-        } catch (error) {
-          console.error('Failed to resume primary call on conference exit:', primaryCall.sessionId, error);
-        }
-      }
-      this.activeSessionId = primaryCall.sessionId;
+  async disableConferenceMode(): Promise<void> {
+    console.log('🔚 Ending conference for ALL participants...');
+    
+    if (!this.conferenceRoomId) {
+      console.log('No conference room to end');
+      return;
     }
-    // Clear conference participants and room
+    
+    // Important: In FreeSWITCH, when participants are transferred via REFER,
+    // they become direct participants of the conference bridge.
+    // The only way to forcefully disconnect them is through FreeSWITCH's
+    // conference control API or by destroying the conference room.
+    
+    // Step 1: Leave the conference room ourselves (initiator) first
+    // This ensures we don't get any callbacks while tearing down
+    const conferenceSessionId = `conf_session_${this.conferenceRoomId}`;
+    const conferenceSession = this.sessions.get(conferenceSessionId);
+      
+    
+    if (conferenceSession) {
+      console.log(`📞 Initiator leaving conference room ${this.conferenceRoomId}`);
+      
+      try {
+        // Send BYE to leave the conference room
+        if (conferenceSession.state === SessionState.Established) {
+          await conferenceSession.bye();
+        } else if (conferenceSession.terminate) {
+          await conferenceSession.terminate();
+        }
+      } catch (error) {
+        console.error('Failed to leave conference room:', error);
+      }
+      
+      // Clean up the conference session
+      this.sessions.delete(conferenceSessionId);
+      this.callInfos.delete(conferenceSessionId);
+      this.cleanupAudioForSession(conferenceSessionId);
+    }
+    
+    // Step 2: Send conference commands to FreeSWITCH to end conference for all
+    // We'll use the conference session to send INFO commands
+    if (this.conferenceRoomId) {
+      try {
+        // First, try to kick all participants
+        await this.sendFreeSwitchConferenceCommand('hupall');
+        console.log('Sent hupall command to kick all participants');
+        
+        // Give FreeSWITCH time to process
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Then destroy the conference room
+        await this.sendFreeSwitchConferenceCommand('destroy');
+        console.log(`✅ Sent destroy command for conference room ${this.conferenceRoomId}`);
+      } catch (error) {
+        console.error('Failed to send conference control commands:', error);
+      }
+    }
+    
+    // Step 5: Clean up conference subscription
+    if (this.conferenceSubscriber) {
+      try {
+        await this.conferenceSubscriber.unsubscribe();
+        console.log('✅ Unsubscribed from conference events');
+      } catch (error) {
+        console.error('Failed to unsubscribe from conference events:', error);
+      }
+      this.conferenceSubscriber = undefined;
+    }
+
+    // Step 6: Clear all conference state
+    this.isConferenceMode = false;
     this.conferenceParticipants.clear();
-    this.conferenceRoomId = undefined;
+    this.conferenceParticipantInfos.clear();
+    this.conferenceState.clear();
+    this.pendingReferTransfers.clear();
+    this.successfulTransfers.clear();
+    this.activeSessionId = undefined;
+    
+    // Release the conference room
+    if (this.conferenceRoomId) {
+      await this.releaseConferenceRoom(this.conferenceRoomId);
+      this.conferenceRoomId = undefined;
+    }
+    
     // Cleanup conference mixer
     this.cleanupConferenceMixer();
-    // Revert to normal mode - only active call unmuted
-    this.muteAllInactiveCalls();
-    console.log('FreeSWITCH conference ended with smart call management');
+    
+    // Update call state to idle
     this.updateCallState();
+    console.log('✅ Conference ended for all participants');
   }
 
   private setupConferenceMixer(): void {
@@ -1337,9 +2080,14 @@ export class SipService {
     // Mute the participant
     this.setAudioForSession(sessionId, true);
 
-    // If no participants left, disable conference mode
-    if (this.conferenceParticipants.size === 0) {
-      this.disableConferenceMode();
+    // If only conference room session remains, disable conference mode
+    const realParticipants = Array.from(this.conferenceParticipants).filter(
+      id => !id.startsWith('conf_session_')
+    );
+    
+    if (realParticipants.length === 0) {
+      console.log('No real participants left, but keeping conference controls visible');
+      // Don't auto-disable conference mode - let user manually end it
     }
 
     console.log('Removed from conference:', sessionId);
@@ -1363,9 +2111,745 @@ export class SipService {
     return this.isConferenceMode;
   }
 
-  // Send INVITE to establish conference bridge (Zoiper-style)
+  getConferenceRoomId(): string | undefined {
+    return this.conferenceRoomId;
+  }
+
+  // FreeSWITCH conference control commands
+  async muteConferenceParticipant(sessionId: string): Promise<boolean> {
+    if (!this.conferenceRoomId) {
+      console.warn('No active conference room');
+      return false;
+    }
+
+    try {
+      // After REFER transfer, original sessions are terminated
+      // We need to send conference control commands differently
+      const session = this.sessions.get(sessionId);
+      
+      // If session exists (pre-REFER or conference room session)
+      if (session && typeof session.request === 'function') {
+        const bodyContent = {
+          content: `conference ${this.conferenceRoomId} mute ${sessionId}`,
+          contentType: 'application/conference-info+xml',
+          contentDisposition: 'render'
+        };
+
+        await session.request('INFO', {
+          extraHeaders: [
+            'X-Conference-Control: mute',
+            `X-Conference-Room: ${this.conferenceRoomId}`,
+            `X-Conference-Member: ${sessionId}`,
+            'Content-Type: application/conference-info+xml'
+          ],
+          body: bodyContent
+        });
+
+        console.log(`✅ Muted conference participant ${sessionId}`);
+        return true;
+      } else {
+        // Session doesn't exist (likely after REFER transfer)
+        console.warn(`⚠️ Cannot mute ${sessionId} - session terminated after REFER transfer`);
+        console.log(`Note: Conference control after REFER requires FreeSWITCH API integration`);
+        // Track mute state locally in conferenceParticipantInfos since sessions are gone after REFER
+        const participantInfo = this.conferenceParticipantInfos.get(sessionId);
+        if (participantInfo) {
+          participantInfo.isMuted = true;
+          this.conferenceParticipantInfos.set(sessionId, participantInfo);
+          console.log(`✅ Tracked mute state locally for conference participant ${sessionId}`);
+          this.updateCallState();
+          return true;
+        }
+        return false;
+      }
+    } catch (error) {
+      console.error(`Failed to mute conference participant ${sessionId}:`, error);
+    }
+    return false;
+  }
+
+  async unmuteConferenceParticipant(sessionId: string): Promise<boolean> {
+    if (!this.conferenceRoomId) {
+      console.warn('No active conference room');
+      return false;
+    }
+
+    try {
+      // Send SIP INFO to FreeSWITCH with conference control command
+      const session = this.sessions.get(sessionId);
+      if (session && typeof session.request === 'function') {
+        const bodyContent = {
+          content: `conference ${this.conferenceRoomId} unmute ${sessionId}`,
+          contentType: 'application/conference-info+xml',
+          contentDisposition: 'render'
+        };
+
+        await session.request('INFO', {
+          extraHeaders: [
+            'X-Conference-Control: unmute',
+            `X-Conference-Room: ${this.conferenceRoomId}`,
+            `X-Conference-Member: ${sessionId}`,
+            'Content-Type: application/conference-info+xml'
+          ],
+          body: bodyContent
+        });
+
+        console.log(`✅ Unmuted conference participant ${sessionId}`);
+        return true;
+      } else {
+        // Session doesn't exist (likely after REFER transfer)
+        console.warn(`⚠️ Cannot unmute ${sessionId} - session terminated after REFER transfer`);
+        console.log(`Note: Conference control after REFER requires FreeSWITCH API integration`);
+        // Track mute state locally in conferenceParticipantInfos since sessions are gone after REFER
+        const participantInfo = this.conferenceParticipantInfos.get(sessionId);
+        if (participantInfo) {
+          participantInfo.isMuted = false;
+          this.conferenceParticipantInfos.set(sessionId, participantInfo);
+          console.log(`✅ Tracked unmute state locally for conference participant ${sessionId}`);
+          this.updateCallState();
+          return true;
+        }
+        return false;
+      }
+    } catch (error) {
+      console.error(`Failed to unmute conference participant ${sessionId}:`, error);
+    }
+    return false;
+  }
+
+  async kickConferenceParticipant(sessionId: string): Promise<boolean> {
+    if (!this.conferenceRoomId) {
+      console.warn('No active conference room');
+      return false;
+    }
+
+    try {
+      // Get participant info to kick by remote number
+      const participantInfo = this.conferenceParticipantInfos.get(sessionId);
+      if (!participantInfo) {
+        console.warn(`No participant info found for session ${sessionId}`);
+        return false;
+      }
+
+      console.log(`🦵 Kicking participant ${participantInfo.remoteNumber} (${sessionId}) from conference ${this.conferenceRoomId}`);
+
+      // Send direct BYE to participant's session to terminate their call
+      const participantSession = this.sessions.get(sessionId);
+      if (participantSession && participantSession.state === SessionState.Established) {
+        try {
+          console.log(`📞 Sending BYE to ${participantInfo.remoteNumber} at ${participantSession.remoteIdentity?.uri}`);
+          
+          // Send BYE message directly to participant
+          await participantSession.bye({
+            requestOptions: {
+              extraHeaders: [
+                'Reason: SIP;cause=200;text="Kicked from conference"'
+              ]
+            }
+          });
+          
+          console.log(`✅ Sent BYE to kick participant ${participantInfo.remoteNumber}`);
+        } catch (byeError) {
+          console.error('Failed to send BYE to participant:', byeError);
+          
+          // Fallback: Try using endCall method
+          try {
+            await this.endCall(sessionId);
+            console.log(`✅ Ended call via endCall for participant ${participantInfo.remoteNumber}`);
+          } catch (fallbackError) {
+            console.error('Fallback end call also failed:', fallbackError);
+            return false;
+          }
+        }
+      } else {
+        console.warn(`No established session found for ${sessionId}, trying endCall method`);
+        
+        // Fallback: Use endCall method if session not found or not established
+        try {
+          await this.endCall(sessionId);
+          console.log(`✅ Ended call via endCall for participant ${participantInfo.remoteNumber}`);
+        } catch (error) {
+          console.error('Failed to end participant call:', error);
+          return false;
+        }
+      }
+
+      // Remove from local tracking
+      this.conferenceParticipants.delete(sessionId);
+      this.conferenceParticipantInfos.delete(sessionId);
+      console.log(`📋 Removed ${sessionId} from local tracking`);
+
+      // Force UI update
+      this.updateCallState();
+
+      return true;
+    } catch (error) {
+      console.error(`Failed to kick conference participant ${sessionId}:`, error);
+    }
+    return false;
+  }
+
+  // Get conference participant details for UI
+  getConferenceParticipantDetails(): Array<{
+    sessionId: string;
+    remoteNumber: string;
+    direction: 'incoming' | 'outgoing';
+    isMuted: boolean;
+    isOnHold: boolean;
+  }> {
+    const participants: Array<{
+      sessionId: string;
+      remoteNumber: string;
+      direction: 'incoming' | 'outgoing';
+      isMuted: boolean;
+      isOnHold: boolean;
+    }> = [];
+
+    console.log('🔍 Getting conference participants:', {
+      conferenceParticipants: Array.from(this.conferenceParticipants),
+      conferenceParticipantInfos: Array.from(this.conferenceParticipantInfos.keys()),
+      isConferenceMode: this.isConferenceMode,
+      conferenceRoomId: this.conferenceRoomId
+    });
+
+    // In conference mode, show the ORIGINAL participants (B and C) from conferenceParticipantInfos
+    // These are the real participants, regardless of session state
+    if (this.isConferenceMode && this.conferenceParticipantInfos.size > 0) {
+      for (const [sessionId, callInfo] of this.conferenceParticipantInfos.entries()) {
+        // Don't show conference room sessions in participant list
+        if (sessionId.startsWith('conf_session_') || sessionId.startsWith('conf_auto_')) {
+          console.log(`Skipping internal conference session ${sessionId}`);
+          continue;
+        }
+        
+        participants.push({
+          sessionId: callInfo.sessionId,
+          remoteNumber: callInfo.remoteNumber,
+          direction: callInfo.direction,
+          isMuted: false, // TODO: Track mute state
+          isOnHold: callInfo.isOnHold
+        });
+        console.log(`📋 Conference participant: ${callInfo.remoteNumber} (${sessionId})`);
+      }
+    }
+
+    console.log(`📊 Conference participants for UI (${participants.length}):`, participants.map(p => p.remoteNumber));
+    return participants;
+  }
+
+  // Conference room allocation and management
+  private static readonly CONFERENCE_ROOM_PREFIX = '3';
+  private static readonly CONFERENCE_ROOM_START = 3000;
+  private static readonly CONFERENCE_ROOM_END = 3999;
+  private static allocatedRooms: Set<string> = new Set();
+
+  /**
+   * Get the next available conference room extension
+   * Conference rooms typically use extensions in the 3000-3999 range
+   */
+  getNextAvailableConferenceRoom(): string {
+    // Start from 3000 and find the first available room
+    for (let i = SipService.CONFERENCE_ROOM_START; i <= SipService.CONFERENCE_ROOM_END; i++) {
+      const roomId = i.toString();
+      if (!SipService.allocatedRooms.has(roomId)) {
+        return roomId;
+      }
+    }
+    // If all rooms are taken, generate a dynamic room with timestamp
+    return `3${Date.now().toString().slice(-3)}`;
+  }
+
+  /**
+   * Allocate a conference room for use by sending INVITE to FreeSWITCH
+   * Returns the allocated room ID or null if unable to allocate
+   */
+  async allocateConferenceRoom(roomId?: string): Promise<string | null> {
+    try {
+      const room = roomId || this.getNextAvailableConferenceRoom();
+      
+      // Check if room is already allocated locally
+      if (SipService.allocatedRooms.has(room)) {
+        console.warn(`Conference room ${room} is already allocated`);
+        return null;
+      }
+      
+      // Send INVITE to FreeSWITCH to reserve the conference room
+      if (this.userAgent && this.registerer?.state === 'Registered') {
+        try {
+          const conferenceUri = `sip:${room}@${this.config?.server || 'localhost'}`;
+          
+          // Create an inviter to establish a control session with the conference room
+          const inviter = new Inviter(this.userAgent, new URI('sip', room, this.config?.server || 'localhost'), {
+            sessionDescriptionHandlerOptions: {
+              constraints: { audio: false, video: false }, // No media for control session
+            },
+            extraHeaders: [
+              'X-Conference-Control: allocate',
+              'X-Conference-Room: ' + room,
+              'Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO',
+              'Content-Type: application/sdp'
+            ]
+          });
+          
+          // Send the INVITE
+          await inviter.invite();
+          
+          // Store the control session
+          const controlSessionId = `control_${room}`;
+          this.sessions.set(controlSessionId, inviter);
+          
+          console.log(`📞 Sent INVITE to reserve conference room ${room} on FreeSWITCH`);
+          
+          // Handle session state
+          inviter.stateChange.addListener((state: SessionState) => {
+            if (state === SessionState.Established) {
+              console.log(`✅ Conference room ${room} successfully reserved on FreeSWITCH`);
+              // Immediately put the control session on hold or terminate after reservation
+              setTimeout(() => {
+                inviter.bye();
+              }, 1000);
+            } else if (state === SessionState.Terminated) {
+              console.log(`Control session for room ${room} terminated`);
+              this.sessions.delete(controlSessionId);
+            }
+          });
+          
+        } catch (sipError) {
+          console.error(`Failed to send INVITE to reserve room ${room}:`, sipError);
+          // Continue with local allocation even if SIP fails
+        }
+      }
+      
+      // Mark as allocated locally
+      SipService.allocatedRooms.add(room);
+      console.log(`✅ Allocated conference room locally: ${room}`);
+      return room;
+    } catch (error) {
+      console.error('Failed to allocate conference room:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Release a conference room back to the pool by sending BYE or INFO to FreeSWITCH
+   */
+  async releaseConferenceRoom(roomId: string): Promise<boolean> {
+    if (SipService.allocatedRooms.has(roomId)) {
+      // Send SIP message to FreeSWITCH to release the conference room
+      if (this.userAgent && this.registerer?.state === 'Registered') {
+        try {
+          // Check if we have a control session for this room
+          const controlSessionId = `control_${roomId}`;
+          const controlSession = this.sessions.get(controlSessionId);
+          
+          if (controlSession && typeof controlSession.bye === 'function') {
+            // Send BYE to terminate the control session
+            await controlSession.bye();
+            console.log(`📞 Sent BYE to release conference room ${roomId} on FreeSWITCH`);
+          } else {
+            // Alternative: Send OPTIONS or INFO to notify FreeSWITCH about room release
+            if (this.userAgent.userAgentCore) {
+              const target = new URI('sip', roomId, this.config?.server || 'localhost');
+              
+              // Create body object with FreeSWITCH conference control format
+              const bodyContent = {
+                content: 'action=release',
+                contentType: 'application/conference-info+xml',
+                contentDisposition: 'render'
+              };
+              
+              const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+                'INFO',
+                target,
+                this.userAgent.userAgentCore.configuration.aor,
+                target,
+                {},
+                [
+                  'X-Conference-Control: release', 
+                  `X-Conference-Room: ${roomId}`,
+                  'Content-Type: application/conference-info+xml'
+                ],
+                bodyContent
+              );
+              
+              // Send the INFO request
+              this.userAgent.userAgentCore.request(request);
+              console.log(`📞 Sent INFO to release conference room ${roomId} on FreeSWITCH`);
+            }
+          }
+          
+          // Clean up control session
+          this.sessions.delete(controlSessionId);
+          
+        } catch (sipError) {
+          console.error(`Failed to send SIP message to release room ${roomId}:`, sipError);
+          // Continue with local release even if SIP fails
+        }
+      }
+      
+      // Remove from local allocation
+      SipService.allocatedRooms.delete(roomId);
+      console.log(`✅ Released conference room locally: ${roomId}`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get list of all allocated conference rooms
+   */
+  getAllocatedConferenceRooms(): string[] {
+    return Array.from(SipService.allocatedRooms);
+  }
+
+  /**
+   * Check if a specific room is available
+   */
+  isConferenceRoomAvailable(roomId: string): boolean {
+    return !SipService.allocatedRooms.has(roomId);
+  }
+
+  /**
+   * Get conference room status information
+   */
+  getConferenceRoomStatus(): {
+    totalRooms: number;
+    allocatedRooms: string[];
+    availableCount: number;
+    nextAvailable: string;
+  } {
+    const allocatedRooms = this.getAllocatedConferenceRooms();
+    const totalRooms = SipService.CONFERENCE_ROOM_END - SipService.CONFERENCE_ROOM_START + 1;
+    
+    return {
+      totalRooms,
+      allocatedRooms,
+      availableCount: totalRooms - allocatedRooms.length,
+      nextAvailable: this.getNextAvailableConferenceRoom()
+    };
+  }
+
+  // Transfer a call to conference using REFER (as per conference.md Phase 4)
+  private async transferCallToConference(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    
+    if (session.state !== SessionState.Established) {
+      throw new Error(`Session ${sessionId} is not established (state: ${session.state})`);
+    }
+    
+    if (!this.config?.server || !this.conferenceRoomId) {
+      console.warn('Missing config server or conference room ID, skipping REFER');
+      return;
+    }
+    
+    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
+    
+    try {
+      // Send REFER to transfer the call to conference (Phase 4 from conference.md)
+      console.log(`📞 Sending REFER to transfer ${sessionId} to conference room ${this.conferenceRoomId}`);
+      
+      if (typeof session.refer === 'function') {
+        // Use session's refer method if available
+        await session.refer(new URI('sip', this.conferenceRoomId, this.config.server), {
+          requestDelegate: {
+            onAccept: () => {
+              console.log(`✅ REFER accepted for session ${sessionId}`);
+            },
+            onReject: (response: any) => {
+              console.error(`❌ REFER rejected for session ${sessionId}:`, response);
+            },
+            onNotify: (notification: any) => {
+              console.log(`📨 REFER NOTIFY for session ${sessionId}:`, notification);
+              this.handleReferNotify(sessionId, notification);
+            }
+          }
+        });
+      } else if (typeof session.request === 'function') {
+        // Fallback to manual REFER request
+        const referToURI = new URI('sip', this.conferenceRoomId, this.config.server);
+        await session.request('REFER', {
+          extraHeaders: [
+            `Refer-To: ${referToURI.toString()}`,
+            'Referred-By: ' + (session.localIdentity?.uri?.toString() || 'softphone')
+          ],
+          requestDelegate: {
+            onAccept: () => {
+              console.log(`✅ Conference REFER accepted for session: ${sessionId}`);
+            },
+            onReject: (response: any) => {
+              console.error(`❌ Conference REFER rejected for session: ${sessionId}`, response);
+            },
+            onNotify: (notification: any) => {
+              console.log(`📨 Manual REFER NOTIFY for session ${sessionId}:`, notification);
+              this.handleReferNotify(sessionId, notification);
+            }
+          }
+        });
+      } else {
+        console.warn(`Session ${sessionId} does not support REFER, using re-INVITE fallback`);
+        // Fallback to re-INVITE approach
+        await this.inviteToConference(session, this.callInfos.get(sessionId)!);
+      }
+      
+      console.log(`✅ Successfully sent REFER for ${sessionId} to conference room ${this.conferenceRoomId}`);
+    } catch (error) {
+      console.error(`Failed to send REFER for session ${sessionId} to conference:`, error);
+      throw error;
+    }
+  }
+
+  // Handle REFER NOTIFY messages from FreeSWITCH
+  private handleReferNotify(sessionId: string, notification: any): void {
+    try {
+      console.log(`📨 Processing REFER NOTIFY for session ${sessionId}:`, notification);
+      
+      // Extract SIP response code from notification
+      const body = notification.request?.body;
+      const sipStatus = this.extractSipStatusFromNotify(body);
+      
+      if (sipStatus) {
+        console.log(`🔄 REFER status update for ${sessionId}: ${sipStatus.code} ${sipStatus.reason}`);
+        
+        if (sipStatus.code >= 200 && sipStatus.code < 300) {
+          // Transfer successful (2xx response)
+          console.log(`✅ REFER transfer successful for session ${sessionId}`);
+          
+          // Mark session as transferred to conference
+          const callInfo = this.callInfos.get(sessionId);
+          if (callInfo) {
+            callInfo.isInConference = true;
+            this.conferenceParticipants.add(sessionId);
+            console.log(`🎯 Session ${sessionId} (${callInfo.remoteNumber}) confirmed in conference`);
+          }
+          
+          // Track successful transfer
+          this.pendingReferTransfers.delete(sessionId);
+          this.successfulTransfers.add(sessionId);
+          
+        } else if (sipStatus.code >= 400) {
+          // Transfer failed (4xx, 5xx, 6xx response)
+          console.error(`❌ REFER transfer failed for session ${sessionId}: ${sipStatus.code} ${sipStatus.reason}`);
+          
+          // Keep session in regular call state since transfer failed
+          const callInfo = this.callInfos.get(sessionId);
+          if (callInfo) {
+            callInfo.isInConference = false;
+            console.log(`⚠️ Session ${sessionId} (${callInfo.remoteNumber}) remains as regular call`);
+          }
+          
+          // Remove from pending transfers
+          this.pendingReferTransfers.delete(sessionId);
+        }
+        // 1xx responses are provisional, continue waiting
+      }
+      
+      // Notify UI of state change
+      this.emitEvent('conferenceStateChanged', {
+        participants: Array.from(this.conferenceParticipants),
+        sessionId,
+        notifyStatus: sipStatus
+      });
+      
+    } catch (error) {
+      console.error(`Failed to handle REFER NOTIFY for session ${sessionId}:`, error);
+    }
+  }
+
+  // Extract SIP status code from NOTIFY body
+  private extractSipStatusFromNotify(body: string | undefined): { code: number; reason: string } | null {
+    if (!body) return null;
+    
+    try {
+      // NOTIFY body typically contains: "SIP/2.0 200 OK" or similar
+      const sipLineMatch = body.match(/SIP\/2\.0\s+(\d+)\s+(.+)/i);
+      if (sipLineMatch) {
+        return {
+          code: parseInt(sipLineMatch[1], 10),
+          reason: sipLineMatch[2].trim()
+        };
+      }
+      
+      // Alternative format: just the status code and reason
+      const statusMatch = body.match(/(\d{3})\s+(.+)/);
+      if (statusMatch) {
+        return {
+          code: parseInt(statusMatch[1], 10),
+          reason: statusMatch[2].trim()
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Failed to parse NOTIFY body:', error);
+      return null;
+    }
+  }
+
+  // Wait for REFER transfers to complete before joining conference
+  private async waitForReferTransfers(timeoutMs: number = 10000): Promise<void> {
+    const startTime = Date.now();
+    
+    return new Promise((resolve, reject) => {
+      const checkTransfers = () => {
+        const elapsed = Date.now() - startTime;
+        
+        // Check if we have any successful transfers
+        if (this.successfulTransfers.size > 0) {
+          console.log(`✅ At least one REFER transfer completed successfully (${this.successfulTransfers.size}/${this.successfulTransfers.size + this.pendingReferTransfers.size})`);
+          resolve();
+          return;
+        }
+        
+        // Check if all transfers completed (success or failure)
+        if (this.pendingReferTransfers.size === 0) {
+          if (this.successfulTransfers.size === 0) {
+            console.warn('⚠️ All REFER transfers completed without success confirmation, but FreeSWITCH may have processed them anyway');
+          }
+          resolve();
+          return;
+        }
+        
+        // Check for timeout
+        if (elapsed >= timeoutMs) {
+          console.warn(`⏰ Timeout waiting for REFER transfers after ${timeoutMs}ms`);
+          console.warn(`Still pending: ${Array.from(this.pendingReferTransfers)}`);
+          console.warn(`Successful: ${Array.from(this.successfulTransfers)}`);
+          resolve(); // Proceed anyway after timeout
+          return;
+        }
+        
+        // Continue waiting
+        setTimeout(checkTransfers, 200);
+      };
+      
+      // Start checking
+      checkTransfers();
+    });
+  }
+
+  // Join conference room directly (as per conference.md Phase 5)
+  private async joinConferenceRoom(roomId: string): Promise<void> {
+    if (!this.userAgent || !this.config?.server) {
+      throw new Error('UserAgent or server config not available');
+    }
+    
+    try {
+      console.log(`📞 Joining conference room ${roomId} with new INVITE`);
+      
+      // Build extra headers for conference join
+      const extraHeaders = [
+        'X-Conference-Join: true',
+        `X-Conference-Room: ${roomId}`,
+        'Allow: INVITE, ACK, CANCEL, BYE, REFER, NOTIFY, MESSAGE, OPTIONS, INFO, SUBSCRIBE'
+      ];
+      
+      // Commented out PIN-based moderator authentication
+      // FreeSWITCH may need specific dialplan configuration for PIN support
+      /*
+      if (this.config.moderatorPin) {
+        console.log(`🔐 Joining as moderator with PIN: ${this.config.moderatorPin}`);
+        extraHeaders.push(`X-Conference-Pin: ${this.config.moderatorPin}`);
+        extraHeaders.push('X-Conference-Role: moderator');
+      } else {
+        console.log('👤 Joining as regular participant (no moderator PIN configured)');
+      }
+      */
+      
+      // For now, always join as moderator without PIN
+      if (this.config.moderatorPin) {
+        console.log(`🔐 Moderator PIN configured but not sent (PIN auth disabled)`);
+        extraHeaders.push('X-Conference-Role: moderator');
+      }
+      
+      // Create new INVITE to conference room
+      const target = new URI('sip', roomId, this.config.server);
+      const inviter = new Inviter(this.userAgent, target, {
+        sessionDescriptionHandlerOptions: {
+          constraints: { audio: true, video: false }
+        },
+        extraHeaders
+      });
+      
+      // Store conference session BEFORE sending INVITE to prevent it being treated as incoming
+      const conferenceSessionId = `conf_session_${roomId}`;
+      this.sessions.set(conferenceSessionId, inviter);
+      this.conferenceParticipants.add(conferenceSessionId);
+      
+      // Handle session state changes
+      inviter.stateChange.addListener((state: SessionState) => {
+        if (state === SessionState.Established) {
+          console.log(`✅ Successfully joined conference room ${roomId}`);
+          this.setupAudioStreams(inviter, conferenceSessionId);
+          
+          // Set up conference event listeners to receive notifications from FreeSWITCH
+          this.setupConferenceEventListeners(inviter);
+          
+          // Ensure audio is properly enabled for conference session
+          this.setAudioForSession(conferenceSessionId, false); // Unmute conference session
+          
+          // Set conference session as active to maintain UI state
+          this.activeSessionId = conferenceSessionId;
+          
+          // Create a callInfo for the conference session to maintain UI state
+          // But DON'T add it to conferenceParticipantInfos (that's for the original participants)
+          this.callInfos.set(conferenceSessionId, {
+            sessionId: conferenceSessionId,
+            remoteNumber: `Conference ${roomId}`,
+            isOnHold: false,
+            direction: 'outgoing',
+            status: 'connected',
+            startTime: new Date(),
+            isInConference: true
+          });
+          
+          console.log(`✅ Conference room session created, preserving ${this.conferenceParticipantInfos.size} original participants in UI`);
+          
+          // Subscribe to conference events now that we're established in the conference
+          // The ACK has been sent and we're officially part of the conference
+          if (this.conferenceRoomId) {
+            console.log(`🔔 Subscribing to conference events for room ${this.conferenceRoomId} after session established`);
+            this.subscribeToConferenceEvents();
+          }
+          
+          // Force UI update to show conference controls immediately
+          this.updateCallState();
+          this.emitEvent('conferenceStateChanged', {
+            participants: Array.from(this.conferenceParticipants),
+            isConferenceMode: this.isConferenceMode,
+            conferenceRoomId: this.conferenceRoomId
+          });
+        } else if (state === SessionState.Terminated) {
+          console.log(`Conference session for room ${roomId} terminated`);
+          this.sessions.delete(conferenceSessionId);
+          this.conferenceParticipants.delete(conferenceSessionId);
+          
+          // If this was our main conference session, end conference mode
+          if (this.isConferenceMode) {
+            console.log('⚠️ Main conference session terminated, but keeping conference controls visible');
+            // Don't auto-disable conference mode - let user manually end it
+            // this.disableConferenceMode();
+          }
+        }
+      });
+      
+      // Send INVITE to join conference
+      await inviter.invite();
+      
+      console.log(`✅ INVITE sent to join conference room ${roomId}`);
+    } catch (error) {
+      console.error(`Failed to join conference room ${roomId}:`, error);
+      throw error;
+    }
+  }
+
+  // Send INVITE to establish conference bridge (Zoiper-style) - kept as fallback
   private async inviteToConference(session: any, callInfo: CallInfo): Promise<void> {
     try {
+      console.log(`Sending re-INVITE for conference to ${callInfo.remoteNumber} (${callInfo.sessionId})`);
+      
       // Use sessionDescriptionHandlerModifiers to maintain current SDP settings
       const conferenceModifier = (description: RTCSessionDescriptionInit) => {
         if (description.sdp) {
@@ -1373,7 +2857,7 @@ export class SipService {
           description.sdp = description.sdp.replace(/a=inactive/g, 'a=sendrecv');
           description.sdp = description.sdp.replace(/a=sendonly/g, 'a=sendrecv');
           description.sdp = description.sdp.replace(/a=recvonly/g, 'a=sendrecv');
-          console.log('Modified SDP for conference: set a=sendrecv');
+          console.log(`Modified SDP for conference (${callInfo.sessionId}): set a=sendrecv`);
         }
         return Promise.resolve(description);
       };
@@ -1386,66 +2870,20 @@ export class SipService {
             'Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE',
             'Supported: replaces, norefersub, extended-refer, timer, outbound, path',
             'Allow-Events: presence, kpml, talk, as-feature-event',
-            `X-Conference-Id: ${this.conferenceRoomId}`
+            `X-Conference-Id: ${this.conferenceRoomId}`,
+            `X-Conference-Room: ${this.conferenceRoomId}`,
+            'X-Conference-Mode: participant'
           ]
         }
       });
       
-      console.log(`✅ Sent conference INVITE for session ${callInfo.sessionId} to join conference ${this.conferenceRoomId}`);
+      console.log(`✅ Sent conference re-INVITE for ${callInfo.remoteNumber} (${callInfo.sessionId}) to join conference ${this.conferenceRoomId}`);
     } catch (error) {
-      console.error(`Failed to send conference INVITE for session ${callInfo.sessionId}:`, error);
+      console.error(`Failed to send conference re-INVITE for ${callInfo.remoteNumber} (${callInfo.sessionId}):`, error);
       throw error;
     }
   }
 
-  // Transfer a call to FreeSWITCH conference room using SIP REFER (legacy method)
-  private async transferToConference(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-
-    if (session.state !== SessionState.Established) {
-      throw new Error(`Session ${sessionId} is not established (state: ${session.state})`);
-    }
-
-    if (!this.config?.server || !this.conferenceRoomId) {
-      console.warn('Missing config server or conference room ID, skipping REFER');
-      return;
-    }
-
-    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
-    try {
-      // Send REFER to transfer the call to conference
-      console.log(`Transferring session ${sessionId} to conference: ${conferenceUri}`);
-      // Check if session has the request method
-      if (typeof session.request !== 'function') {
-        console.warn(`Session ${sessionId} does not support REFER requests, using client-side mixing`);
-        return;
-      }
-      // Create REFER request manually using session's request method
-      const referToURI = new URI('sip', this.conferenceRoomId, this.config.server);
-      const referRequest = session.request('REFER', {
-        extraHeaders: [
-          `Refer-To: ${referToURI.toString()}`,
-          'Referred-By: ' + session.remoteIdentity?.uri?.toString() || 'unknown'
-        ],
-        requestDelegate: {
-          onAccept: () => {
-            console.log(`Conference REFER accepted for session: ${sessionId}`);
-          },
-          onReject: (response: any) => {
-            console.error(`Conference REFER rejected for session: ${sessionId}`, response);
-          }
-        }
-      });
-      console.log(`Successfully sent REFER for ${sessionId} to conference room ${this.conferenceRoomId}`);
-    } catch (error) {
-      console.error(`Failed to send REFER for session ${sessionId} to conference:`, error);
-      // Don't throw here - fallback to client-side mixing
-      console.warn('Falling back to client-side audio mixing for conference');
-    }
-  }
 
   // Alternative method using attended transfer for conference
   async createAttendedConference(sessionId1: string, sessionId2: string): Promise<void> {
@@ -1467,8 +2905,8 @@ export class SipService {
       ]);
       // Transfer both to conference
       await Promise.all([
-        this.transferToConference(sessionId1),
-        this.transferToConference(sessionId2)
+        this.transferCallToConference(sessionId1),
+        this.transferCallToConference(sessionId2)
       ]);
       // Enable conference mode
       this.isConferenceMode = true;
@@ -1484,6 +2922,877 @@ export class SipService {
 
   getActiveCalls(): CallInfo[] {
     return this.getCallInfosArray().filter(call => !call.isOnHold);
+  }
+
+  // Emergency method to leave conference room when stuck (after browser reload)
+  async emergencyLeaveConference(): Promise<void> {
+    console.log('🆘 Emergency conference leave requested');
+    
+    // Try to find any conference room sessions
+    const conferenceSessions = Array.from(this.sessions.entries()).filter(
+      ([sessionId, session]) => sessionId.startsWith('conf_session_')
+    );
+    
+    if (conferenceSessions.length > 0) {
+      console.log(`Found ${conferenceSessions.length} conference sessions to terminate`);
+      
+      for (const [sessionId, session] of conferenceSessions) {
+        try {
+          console.log(`Terminating conference session ${sessionId}`);
+          if (session.bye && session.state === SessionState.Established) {
+            await session.bye();
+          } else if (session.terminate) {
+            await session.terminate();
+          }
+        } catch (error) {
+          console.error(`Failed to terminate conference session ${sessionId}:`, error);
+        }
+      }
+    }
+    
+    // Force disable conference mode
+    debugger; // Emergency conference cleanup - controls about to be hidden
+    this.isConferenceMode = false;
+    this.conferenceParticipants.clear();
+    this.conferenceParticipantInfos.clear();
+    this.pendingReferTransfers.clear();
+    this.successfulTransfers.clear();
+    
+    if (this.conferenceRoomId) {
+      await this.releaseConferenceRoom(this.conferenceRoomId);
+      this.conferenceRoomId = undefined;
+    }
+    
+    this.cleanupConferenceMixer();
+    this.updateCallState();
+    
+    console.log('🆘 Emergency conference leave completed');
+  }
+
+  // Set up event listeners on the conference session to receive notifications from FreeSWITCH
+  private setupConferenceEventListeners(session: any): void {
+    try {
+      console.log('🎧 Setting up conference event listeners for FreeSWITCH notifications');
+      
+      // Listen for incoming INFO messages from FreeSWITCH
+      if (session.delegate) {
+        const originalOnInfo = session.delegate.onInfo;
+        session.delegate.onInfo = (request: any) => {
+          console.log('📨 Received INFO from FreeSWITCH:', request);
+          this.handleConferenceInfo(request);
+          
+          // Call original handler if it exists
+          if (originalOnInfo) {
+            originalOnInfo.call(session.delegate, request);
+          }
+        };
+        
+        const originalOnNotify = session.delegate.onNotify;
+        session.delegate.onNotify = (request: any) => {
+          console.log('📨 Received NOTIFY from FreeSWITCH:', request);
+          this.handleConferenceNotify(request);
+          
+          // Call original handler if it exists
+          if (originalOnNotify) {
+            originalOnNotify.call(session.delegate, request);
+          }
+        };
+      }
+      
+      // Note: Conference event subscription is now done after session is established
+      // to ensure we're actually in the conference before subscribing
+      console.log('✅ Conference event listeners set up successfully (subscription will happen after ACK)');
+    } catch (error) {
+      console.error('Failed to set up conference event listeners:', error);
+    }
+  }
+
+  // Handle INFO messages from FreeSWITCH about conference state
+  private handleConferenceInfo(request: any): void {
+    try {
+      const contentType = request.message?.headers?.['Content-Type']?.[0]?.parsed;
+      const body = request.message?.body;
+      
+      console.log('📨 Conference INFO - Content-Type:', contentType, 'Body:', body);
+      
+      if (contentType?.includes('conference') && body) {
+        // Parse conference state information
+        this.parseConferenceStateUpdate(body);
+      }
+    } catch (error) {
+      console.error('Failed to handle conference INFO:', error);
+    }
+  }
+
+  // Handle NOTIFY messages from FreeSWITCH about conference events (RFC 4575)
+  private handleConferenceNotify(notification: any): void {
+    try {
+      console.log('🔔 CONFERENCE EVENT NOTIFY RECEIVED:');
+      console.log('  - Notification object:', notification);
+      
+      const request = notification.request || notification;
+      const headers = request?.headers || request?.message?.headers;
+      const contentType = headers?.['Content-Type']?.[0]?.parsed || 
+                         request?.getHeader?.('Content-Type') ||
+                         headers?.['content-type']?.[0];
+      const body = request?.body || request?.message?.body;
+      
+      console.log('📨 RFC 4575 Conference NOTIFY Details:');
+      console.log('  - Content-Type:', contentType);
+      console.log('  - Body length:', body?.length);
+      console.log('  - Headers:', headers);
+      
+      if (body) {
+        console.log('  - Body preview (first 500 chars):', body.substring(0, 500));
+      }
+      
+      if (contentType?.includes('conference-info+xml') && body) {
+        console.log('🔔 Parsing RFC 4575 conference-info+xml document');
+        // Parse RFC 4575 conference-info+xml document
+        this.parseConferenceInfoXml(body);
+      } else if (contentType?.includes('conference') && body) {
+        console.log('🔔 Parsing other conference event format');
+        // Fallback: Parse other conference event formats
+        this.parseConferenceStateUpdate(body);
+      } else {
+        console.log('📨 Conference NOTIFY without recognized conference-info content');
+        console.log('  - Full notification for debugging:', JSON.stringify(notification, null, 2));
+      }
+    } catch (error) {
+      console.error('Failed to handle conference NOTIFY:', error);
+    }
+  }
+
+  // Parse RFC 4575 conference-info+xml document
+  private parseConferenceInfoXml(xmlBody: string): void {
+    try {
+      console.log('📋 PARSING RFC 4575 CONFERENCE-INFO+XML:');
+      console.log('  - XML length:', xmlBody.length);
+      console.log('  - Full XML:', xmlBody);
+      
+      // Parse XML using DOMParser
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlBody, 'text/xml');
+      
+      // Check for parse errors
+      const parseError = xmlDoc.querySelector('parsererror');
+      if (parseError) {
+        console.error('❌ XML PARSE ERROR:', parseError.textContent);
+        return;
+      }
+      
+      // Extract conference information
+      const conferenceInfo = xmlDoc.querySelector('conference-info');
+      if (!conferenceInfo) {
+        console.error('❌ No conference-info element found in XML');
+        console.log('  - Document element:', xmlDoc.documentElement?.tagName);
+        console.log('  - Available elements:', xmlDoc.documentElement?.innerHTML);
+        return;
+      }
+      
+      const entity = conferenceInfo.getAttribute('entity');
+      const state = conferenceInfo.getAttribute('state');
+      const version = conferenceInfo.getAttribute('version');
+      
+      console.log(`📋 CONFERENCE INFO PARSED:`);
+      console.log(`  - Entity: ${entity}`);
+      console.log(`  - State: ${state}`);
+      console.log(`  - Version: ${version}`);
+      
+      // Parse conference description
+      const confDesc = xmlDoc.querySelector('conference-description');
+      if (confDesc) {
+        const displayText = confDesc.querySelector('display-text')?.textContent;
+        const subject = confDesc.querySelector('subject')?.textContent;
+        console.log(`📋 Conference: ${displayText || subject}`);
+      }
+      
+      // Parse users/participants
+      const users = xmlDoc.querySelector('users');
+      if (users) {
+        const userElements = users.querySelectorAll('user');
+        console.log(`📋 CONFERENCE PARTICIPANTS:`);
+        console.log(`  - Total count: ${userElements.length}`);
+        
+        // Clear previous state if this is a full update
+        if (state === 'full') {
+          console.log('  - Full update: clearing previous state');
+          this.conferenceState.clear();
+        }
+        
+        userElements.forEach((userElement, index) => {
+          console.log(`  - Parsing participant ${index + 1}...`);
+          const participant = this.parseConferenceUser(userElement);
+          if (participant) {
+            // Check if this participant is leaving/disconnecting
+            const wasInConference = this.conferenceState.has(participant.entity);
+            const isLeaving = participant.state === 'disconnected' || 
+                            participant.state === 'disconnecting' || 
+                            state === 'deleted';
+            
+            if (isLeaving) {
+              this.conferenceState.delete(participant.entity);
+              console.log(`    👤 REMOVED: ${participant.entity}`);
+              
+              // Show alert for participant leaving
+              if (wasInConference) {
+                this.showParticipantLeftAlert(participant);
+              }
+            } else {
+              // Check if participant was already in conference before updating
+              const previousState = this.conferenceState.get(participant.entity);
+              
+              this.conferenceState.set(participant.entity, participant);
+              console.log(`    👤 ADDED/UPDATED: ${participant.entity}`);
+              console.log(`       - Display: ${participant.displayText}`);
+              console.log(`       - State: ${participant.state}`);
+              console.log(`       - Join Method: ${participant.joinMethod}`);
+              console.log(`       - Endpoints: ${participant.endpoints.length}`);
+              
+              // Check if participant state changed to disconnected
+              if (previousState && participant.state === 'disconnected') {
+                this.showParticipantLeftAlert(participant);
+                // Remove from state after showing alert
+                this.conferenceState.delete(participant.entity);
+              }
+            }
+          }
+        });
+        
+        console.log(`  - Conference state now has ${this.conferenceState.size} participants`);
+      } else {
+        console.log('📋 No <users> element found in conference-info');
+      }
+      
+      // Update UI with new conference state
+      this.updateConferenceParticipantUI();
+      
+    } catch (error) {
+      console.error('Failed to parse conference-info+xml:', error);
+    }
+  }
+
+  // Parse individual user element from conference-info+xml
+  private parseConferenceUser(userElement: Element): ConferenceParticipant | null {
+    try {
+      const entity = userElement.getAttribute('entity');
+      const state = userElement.getAttribute('state') as ConferenceParticipant['state'];
+      
+      if (!entity) {
+        console.warn('User element missing entity attribute');
+        return null;
+      }
+      
+      const displayText = userElement.querySelector('display-text')?.textContent;
+      const language = userElement.querySelector('language')?.textContent;
+      
+      // Parse associated URIs and roles
+      const associatedUris = userElement.querySelector('associated-aors');
+      const roles = userElement.querySelector('roles');
+      
+      // Parse endpoints
+      const endpoints: ConferenceEndpoint[] = [];
+      const endpointElements = userElement.querySelectorAll('endpoint');
+      
+      endpointElements.forEach(endpointElement => {
+        const endpoint = this.parseConferenceEndpoint(endpointElement);
+        if (endpoint) {
+          endpoints.push(endpoint);
+        }
+      });
+      
+      // Determine join method from roles or other indicators
+      let joinMethod: ConferenceParticipant['joinMethod'];
+      if (roles?.textContent?.includes('moderator')) {
+        joinMethod = 'focus-owner';
+      } else {
+        joinMethod = 'dialed-in'; // Default assumption
+      }
+      
+      return {
+        entity,
+        displayText,
+        state: state || 'active',
+        joinMethod,
+        language,
+        endpoints
+      };
+      
+    } catch (error) {
+      console.error('Failed to parse conference user:', error);
+      return null;
+    }
+  }
+
+  // Parse individual endpoint element from conference-info+xml
+  private parseConferenceEndpoint(endpointElement: Element): ConferenceEndpoint | null {
+    try {
+      const entity = endpointElement.getAttribute('entity');
+      const state = endpointElement.getAttribute('state') as ConferenceEndpoint['state'];
+      
+      if (!entity) {
+        console.warn('Endpoint element missing entity attribute');
+        return null;
+      }
+      
+      const displayText = endpointElement.querySelector('display-text')?.textContent;
+      
+      // Parse media streams
+      const media: ConferenceMedia[] = [];
+      const mediaElements = endpointElement.querySelectorAll('media');
+      
+      mediaElements.forEach(mediaElement => {
+        const id = mediaElement.getAttribute('id');
+        const type = mediaElement.querySelector('type')?.textContent as ConferenceMedia['type'];
+        const status = mediaElement.querySelector('status')?.textContent as ConferenceMedia['status'];
+        const srcId = mediaElement.querySelector('src-id')?.textContent;
+        
+        if (id && type) {
+          media.push({
+            id,
+            type,
+            status: status || 'sendrecv',
+            srcId
+          });
+        }
+      });
+      
+      return {
+        entity,
+        displayText,
+        state: state || 'active',
+        media
+      };
+      
+    } catch (error) {
+      console.error('Failed to parse conference endpoint:', error);
+      return null;
+    }
+  }
+
+  // Parse conference state updates from FreeSWITCH (fallback for non-RFC 4575)
+  private parseConferenceStateUpdate(body: string): void {
+    try {
+      console.log('🔍 Parsing conference state update:', body);
+      
+      // Try to parse XML if it's structured data
+      if (body.includes('<conference')) {
+        // Handle XML conference state
+        this.parseXMLConferenceState(body);
+      } else if (body.includes('participant') || body.includes('join') || body.includes('leave')) {
+        // Handle text-based conference updates
+        this.parseTextConferenceState(body);
+      }
+      
+      // Force UI update after parsing conference state
+      this.updateConferenceParticipantUI();
+    } catch (error) {
+      console.error('Failed to parse conference state update:', error);
+    }
+  }
+
+  // Parse XML conference state from FreeSWITCH
+  private parseXMLConferenceState(xmlBody: string): void {
+    // Basic XML parsing for conference state
+    // This would need to be adapted based on FreeSWITCH's actual XML format
+    console.log('📋 Parsing XML conference state:', xmlBody);
+    
+    // Example: Extract participant information from XML
+    // In a real implementation, you'd use proper XML parsing
+  }
+
+  // Parse text-based conference state updates
+  private parseTextConferenceState(textBody: string): void {
+    console.log('📋 Parsing text conference state:', textBody);
+    
+    // Look for participant join/leave events
+    if (textBody.includes('joined')) {
+      // Participant joined - update UI
+    } else if (textBody.includes('left') || textBody.includes('disconnected')) {
+      // Participant left - update UI
+    }
+  }
+
+  // Subscribe to conference events from FreeSWITCH per RFC 4575
+  private subscribeToConferenceEvents(): void {
+    try {
+      if (!this.userAgent || !this.config?.server || !this.conferenceRoomId) {
+        console.log('⚠️ Cannot subscribe to conference - missing requirements:');
+        console.log('  - userAgent:', !!this.userAgent);
+        console.log('  - config.server:', this.config?.server);
+        console.log('  - conferenceRoomId:', this.conferenceRoomId);
+        return;
+      }
+      
+      console.log(`📺 SUBSCRIBING TO CONFERENCE EVENTS:`);
+      console.log(`  - Room: ${this.conferenceRoomId}`);
+      console.log(`  - Server: ${this.config.server}`);
+      console.log(`  - Username: ${this.config?.username}`);
+      
+      // Subscribe to conference events using the format:
+      // SUBSCRIBE sip:3000-192.168.1.188@freeswitch.domain.com
+      // where 3000 is the conference room and 192.168.1.188 is the client IP
+      
+      // Get local IP if possible (for now use server IP as placeholder)
+      const localIdentifier = this.config.server.replace(/\./g, '-');
+      const targetUri = `sip:${this.conferenceRoomId}-${localIdentifier}@${this.config.server}`;
+      const eventPackage = 'conference'; // RFC 4575 standard
+      
+      console.log(`  - Target URI: ${targetUri}`);
+      console.log(`  - Event Package: ${eventPackage}`);
+      console.log(`  - From: ${this.config?.username}@${this.config.server}`);
+      
+      const target = UserAgent.makeURI(targetUri);
+      if (!target) {
+        console.error('❌ Failed to create conference subscription target URI');
+        return;
+      }
+      
+      // Check if already subscribed
+      if (this.conferenceSubscriber) {
+        console.log('⚠️ Already have a conference subscription, cleaning up old one');
+        try {
+          this.conferenceSubscriber.unsubscribe();
+        } catch (e) {
+          console.error('Error unsubscribing old subscription:', e);
+        }
+      }
+      
+      // Create conference event subscription
+      console.log(`📺 Creating new Subscriber instance with event: ${eventPackage}...`);
+      this.conferenceSubscriber = new Subscriber(this.userAgent, target, eventPackage);
+      
+      // Set up subscription event handlers
+      this.conferenceSubscriber.stateChange.addListener((newState: SubscriptionState) => {
+        console.log(`📺 CONFERENCE SUBSCRIPTION STATE CHANGED:`);
+        console.log(`  - New State: ${newState}`);
+        console.log(`  - State value:`, newState);
+        
+        switch (newState) {
+          case SubscriptionState.Subscribed:
+            console.log('✅ CONFERENCE EVENT SUBSCRIPTION ACTIVE - Ready to receive NOTIFY messages');
+            break;
+          case SubscriptionState.Terminated:
+            console.log('❌ CONFERENCE EVENT SUBSCRIPTION TERMINATED');
+            this.conferenceSubscriber = undefined;
+            break;
+          default:
+            console.log(`📺 Conference subscription state: ${newState}`);
+            break;
+        }
+      });
+      
+      // Handle incoming NOTIFY messages with conference state
+      console.log('📺 Setting up NOTIFY handler...');
+      this.conferenceSubscriber.delegate = {
+        onNotify: (notification) => {
+          console.log('🔔 RFC 4575 CONFERENCE NOTIFY RECEIVED via subscription');
+          this.handleConferenceNotify(notification);
+        }
+      };
+      
+      // Start the subscription with timeout handling
+      console.log('📺 Sending SUBSCRIBE request...');
+      
+      // Set a timeout for the subscription attempt
+      const subscriptionTimeout = setTimeout(() => {
+        console.warn('⚠️ Conference subscription timeout - FreeSWITCH may not support RFC 4575');
+        console.log('  - This is normal if FreeSWITCH is not configured for conference events');
+        console.log('  - Conference will still work but without real-time participant updates');
+        
+        if (this.conferenceSubscriber) {
+          try {
+            this.conferenceSubscriber.dispose();
+          } catch (e) {
+            console.error('Error disposing timed-out subscription:', e);
+          }
+          this.conferenceSubscriber = undefined;
+        }
+      }, 5000); // 5 second timeout
+      
+      this.conferenceSubscriber.subscribe({
+        requestOptions: {
+          extraHeaders: [
+            'Accept: application/conference-info+xml, application/conference-info+json',
+            'Supported: eventlist',
+            `Event: ${eventPackage}`,
+            `Contact: <sip:${this.config.username}@${this.config.server}>`,
+            'Expires: 3600'
+          ]
+        }
+      }).then(() => {
+        clearTimeout(subscriptionTimeout);
+        console.log(`✅ SUCCESSFULLY SUBSCRIBED TO CONFERENCE EVENTS for room ${this.conferenceRoomId}`);
+        console.log('  - Waiting for NOTIFY messages with conference state...');
+        console.log('  - FreeSWITCH should send initial NOTIFY immediately');
+      }).catch((error) => {
+        clearTimeout(subscriptionTimeout);
+        console.error('❌ CONFERENCE SUBSCRIPTION FAILED:', error);
+        console.error('  - Error details:', error.message);
+        
+        // Check if it's a timeout error (Timer N)
+        if (error.message?.includes('Timer N') || error.message?.includes('Timed out waiting for NOTIFY')) {
+          console.log('📝 SUBSCRIPTION TIMEOUT ANALYSIS:');
+          console.log('  - FreeSWITCH received SUBSCRIBE but did not send NOTIFY');
+          console.log('  - Possible causes:');
+          console.log('    1. FreeSWITCH does not support RFC 4575 conference events');
+          console.log('    2. mod_conference may not be configured for event subscriptions');
+          console.log('    3. Conference room may not exist yet or wrong URI format');
+          console.log('  - Conference functionality will continue without real-time updates');
+        }
+        
+        this.conferenceSubscriber = undefined;
+      });
+      
+    } catch (error) {
+      console.error('❌ Exception in subscribeToConferenceEvents:', error);
+    }
+  }
+
+  // Show alert when a participant leaves the conference
+  private showParticipantLeftAlert(participant: ConferenceParticipant): void {
+    try {
+      const displayName = participant.displayText || participant.entity || 'Unknown participant';
+      const message = `${displayName} has left the conference`;
+      
+      console.log(`🚪 PARTICIPANT LEFT CONFERENCE: ${displayName}`);
+      console.log(`   - Entity: ${participant.entity}`);
+      console.log(`   - State: ${participant.state}`);
+      
+      // Emit event that can be caught by UI components
+      this.emitEvent('participantLeft', {
+        entity: participant.entity,
+        displayText: participant.displayText,
+        message: message
+      });
+      
+      // Also update call state to trigger UI refresh
+      if (this.onCallStateChanged) {
+        const currentState = this.getCurrentCallState();
+        this.onCallStateChanged({
+          ...currentState,
+          errorMessage: message,
+          errorCode: 'PARTICIPANT_LEFT'
+        });
+      }
+      
+      // Log to console with prominent formatting
+      console.log('');
+      console.log('═══════════════════════════════════════════');
+      console.log(`🚪 ${message.toUpperCase()}`);
+      console.log('═══════════════════════════════════════════');
+      console.log('');
+      
+    } catch (error) {
+      console.error('Failed to show participant left alert:', error);
+    }
+  }
+  
+  // Update conference participant UI based on real FreeSWITCH state
+  private updateConferenceParticipantUI(): void {
+    try {
+      console.log('🔄 Updating conference participant UI based on FreeSWITCH state');
+      
+      // Query FreeSWITCH for current conference state
+      this.queryConferenceState();
+      
+      // Trigger a UI update
+      this.updateCallState();
+    } catch (error) {
+      console.error('Failed to update conference participant UI:', error);
+    }
+  }
+
+  // Query FreeSWITCH for current conference participants
+  private async queryConferenceState(): Promise<void> {
+    if (!this.conferenceRoomId) {
+      return;
+    }
+
+    try {
+      console.log(`🔍 Querying FreeSWITCH for conference ${this.conferenceRoomId} state`);
+
+      // Use the conference session to send a list command
+      const conferenceSessionId = `conf_session_${this.conferenceRoomId}`;
+      const conferenceSession = this.sessions.get(conferenceSessionId);
+
+      if (conferenceSession && conferenceSession.state === SessionState.Established) {
+        try {
+          // Send INFO to get conference participant list
+          await conferenceSession.info({
+            contentType: 'application/conference-command',
+            content: `list`
+          });
+          console.log(`📋 Requested participant list for conference ${this.conferenceRoomId}`);
+        } catch (error) {
+          console.error('Failed to query conference state via session:', error);
+          
+          // Fallback: Try direct command
+          await this.sendFreeSwitchConferenceCommand('list');
+        }
+      } else {
+        console.warn('No conference session available, trying direct query');
+        await this.sendFreeSwitchConferenceCommand('list');
+      }
+    } catch (error) {
+      console.error('Failed to query conference state:', error);
+    }
+  }
+
+  // Send a conference control command to FreeSWITCH
+  private async sendFreeSwitchConferenceCommand(command: string): Promise<void> {
+    if (!this.userAgent || !this.config?.server || !this.conferenceRoomId) {
+      console.error('Cannot send conference command - missing requirements');
+      return;
+    }
+    
+    try {
+      console.log(`📡 Sending FreeSWITCH conference command: ${command} for room ${this.conferenceRoomId}`);
+      
+      // Create an Inviter to send INFO to the conference
+      const target = UserAgent.makeURI(`sip:${this.conferenceRoomId}@${this.config.server}`);
+      if (!target) {
+        throw new Error('Failed to create target URI');
+      }
+      
+      // Try to send through existing conference session first
+      const conferenceSessionId = `conf_session_${this.conferenceRoomId}`;
+      const conferenceSession = this.sessions.get(conferenceSessionId);
+      
+      if (conferenceSession && conferenceSession.state === SessionState.Established) {
+        // Send INFO through existing session with proper SIP.js format
+        const body = `<?xml version="1.0" encoding="UTF-8"?>
+<conference-info>
+  <room>${this.conferenceRoomId}</room>
+  <command>${command}</command>
+</conference-info>`;
+        
+        await conferenceSession.info({
+          requestOptions: {
+            body: {
+              content: body,
+              contentType: 'application/conference-info+xml'
+            }
+          }
+        });
+        console.log(`✅ Sent ${command} command through conference session`);
+      } else {
+        // Send as a standalone INFO message using userAgentCore
+        if (this.userAgent.userAgentCore) {
+          const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+            'INFO',
+            target,
+            this.userAgent.userAgentCore.configuration.aor,
+            target,
+            {},
+            [
+              'Content-Type: application/conference-info+xml'
+            ],
+            {
+              content: `<?xml version="1.0" encoding="UTF-8"?>
+<conference-info>
+  <room>${this.conferenceRoomId}</room>
+  <command>${command}</command>
+</conference-info>`,
+              contentType: 'application/conference-info+xml',
+              contentDisposition: 'render'
+            }
+          );
+          
+          this.userAgent.userAgentCore.request(request);
+          console.log(`✅ Sent ${command} command as standalone INFO message`);
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to send conference command ${command}:`, error);
+      throw error;
+    }
+  }
+
+  // Send command to FreeSWITCH to hang up all participants in a conference
+  private async hangupAllConferenceParticipants(): Promise<void> {
+    if (!this.userAgent || !this.config?.server || !this.conferenceRoomId) {
+      console.error('Cannot send conference commands - missing requirements');
+      return;
+    }
+    
+    try {
+      console.log(`🔚 Attempting to disconnect all participants from conference ${this.conferenceRoomId}`);
+      
+      // Get all participant info
+      const participants = Array.from(this.conferenceParticipantInfos.values());
+      
+      // Since participants are connected directly to FreeSWITCH after REFER,
+      // we need to use FreeSWITCH's conference API to kick them
+      // We'll try multiple approaches to ensure they get disconnected
+      
+      // Approach 1: Try to send BYE through the conference session
+      const conferenceSessionId = `conf_session_${this.conferenceRoomId}`;
+      const conferenceSession = this.sessions.get(conferenceSessionId);
+      
+      if (conferenceSession && conferenceSession.state === SessionState.Established) {
+        try {
+          // Send INFO to conference with kick all command
+          await conferenceSession.info({
+            contentType: 'application/conference-command',
+            content: `kick all`
+          });
+          console.log('Sent kick all command through conference session');
+        } catch (error) {
+          console.error('Failed to send kick all command:', error);
+        }
+      }
+      
+      // Approach 2: Try to destroy the conference room directly
+      // This should force all participants to disconnect
+      await this.destroyConferenceRoom();
+      
+      console.log(`✅ Initiated conference teardown for room ${this.conferenceRoomId}`);
+    } catch (error) {
+      console.error(`Failed to disconnect conference participants:`, error);
+    }
+  }
+
+  // Destroy the conference room on FreeSWITCH
+  private async destroyConferenceRoom(): Promise<void> {
+    if (!this.userAgent || !this.config?.server || !this.conferenceRoomId) {
+      console.error('Cannot destroy conference room - missing requirements');
+      return;
+    }
+    
+    try {
+      console.log(`🔚 Destroying conference room ${this.conferenceRoomId} on FreeSWITCH`);
+      
+      // Method 1: Try through conference session if it exists
+      const conferenceSessionId = `conf_session_${this.conferenceRoomId}`;
+      const conferenceSession = this.sessions.get(conferenceSessionId);
+      
+      if (conferenceSession && conferenceSession.state === SessionState.Established) {
+        try {
+          // Send BYE to end our connection, which might trigger room cleanup
+          await conferenceSession.bye();
+          console.log('Sent BYE to conference room');
+        } catch (error) {
+          console.error('Failed to send BYE to conference:', error);
+        }
+      }
+      
+      // Method 2: Send conference destroy command via INFO
+      // Try sending to the conference extension directly
+      const target = new URI('sip', this.conferenceRoomId, this.config.server);
+      
+      if (this.userAgent.userAgentCore) {
+        try {
+          const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+            'INFO',
+            target,
+            this.userAgent.userAgentCore.configuration.aor,
+            target,
+            {},
+            [
+              'Content-Type: application/conference-command'
+            ],
+            {
+              content: 'destroy',
+              contentType: 'application/conference-command',
+              contentDisposition: 'render'
+            }
+          );
+          
+          this.userAgent.userAgentCore.request(request);
+          console.log(`Sent destroy command to conference ${this.conferenceRoomId}`);
+        } catch (error) {
+          console.error('Failed to send destroy command:', error);
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to destroy conference room ${this.conferenceRoomId}:`, error);
+    }
+  }
+
+  // Send FreeSWITCH conference kick command for a specific participant
+  private async sendConferenceKickCommand(participantNumber: string): Promise<void> {
+    if (!this.userAgent || !this.config?.server || !this.conferenceRoomId) {
+      console.error('Cannot send kick command - missing requirements');
+      return;
+    }
+    
+    try {
+      console.log(`🔚 Sending FreeSWITCH kick command for ${participantNumber} in room ${this.conferenceRoomId}`);
+      
+      // Create target URI for FreeSWITCH
+      const target = new URI('sip', 'freeswitch', this.config.server);
+      
+      if (this.userAgent.userAgentCore) {
+        // Send INFO message with FreeSWITCH API command to kick the participant
+        const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+          'INFO',
+          target,
+          this.userAgent.userAgentCore.configuration.aor,
+          target,
+          {},
+          [
+            'Content-Type: application/x-fs-api-command'
+          ],
+          {
+            content: `conference ${this.conferenceRoomId} kick ${participantNumber}`,
+            contentType: 'application/x-fs-api-command',
+            contentDisposition: 'render'
+          }
+        );
+        
+        // Send the INFO request to kick participant
+        this.userAgent.userAgentCore.request(request);
+        console.log(`✅ Sent kick command for ${participantNumber} in conference ${this.conferenceRoomId}`);
+        
+        // Give FreeSWITCH time to process the kick
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      console.error(`Failed to send kick command for ${participantNumber}:`, error);
+    }
+  }
+
+  // End conference for all participants by destroying the conference room on FreeSWITCH
+  private async endConferenceForAll(roomId: string): Promise<void> {
+    if (!this.userAgent || !this.config?.server) {
+      console.error('Cannot end conference - UserAgent or server config not available');
+      return;
+    }
+    
+    try {
+      console.log(`🔚 Sending FreeSWITCH command to destroy conference room ${roomId}`);
+      
+      // Send SIP INFO message to FreeSWITCH to destroy the conference room
+      // This will kick out all participants and end the conference
+      const target = new URI('sip', roomId, this.config.server);
+      
+      if (this.userAgent.userAgentCore) {
+        const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+          'INFO',
+          target,
+          this.userAgent.userAgentCore.configuration.aor,
+          target,
+          {},
+          [
+            'X-Conference-Action: destroy',
+            `X-Conference-Room: ${roomId}`,
+            'Content-Type: application/conference-control+xml'
+          ],
+          {
+            content: `<conference-control><action>destroy</action><room>${roomId}</room></conference-control>`,
+            contentType: 'application/conference-control+xml',
+            contentDisposition: 'render'
+          }
+        );
+        
+        // Send the INFO request to destroy conference
+        this.userAgent.userAgentCore.request(request);
+        console.log(`✅ Sent conference destroy command for room ${roomId}`);
+      }
+    } catch (error) {
+      console.error(`Failed to send conference destroy command for room ${roomId}:`, error);
+    }
   }
 
   async disconnect(): Promise<void> {

@@ -9,7 +9,8 @@ export default function Setup() {
     username: '1002',
     password: '',
     domain: '10.254.18.165',
-    protocol: 'ws'
+    protocol: 'ws',
+    moderatorPin: ''
   });
   const [audioSettings, setAudioSettings] = useState({
     microphoneDevice: 'default',
@@ -37,7 +38,8 @@ export default function Setup() {
         username: '1002',
         password: '',
         domain: '10.254.18.165',
-        protocol: 'ws' as const
+        protocol: 'ws' as const,
+        moderatorPin: ''
       };
       localStorage.setItem('sipConfig', JSON.stringify(defaultConfig));
     }
@@ -69,20 +71,20 @@ export default function Setup() {
     try {
       localStorage.setItem('sipConfig', JSON.stringify(sipConfig));
       // You could also trigger a re-registration here
-      alert('SIP configuration saved! Please reload the Phone component to apply changes.');
+      console.log('SIP configuration saved! Please reload the Phone component to apply changes.');
     } catch (error) {
       console.error('Failed to save SIP configuration:', error);
-      alert('Failed to save configuration');
+      console.error('Failed to save configuration');
     }
   };
 
   const saveAudioSettings = () => {
     try {
       localStorage.setItem('audioSettings', JSON.stringify(audioSettings));
-      alert('Audio settings saved!');
+      console.log('Audio settings saved!');
     } catch (error) {
       console.error('Failed to save audio settings:', error);
-      alert('Failed to save audio settings');
+      console.error('Failed to save audio settings');
     }
   };
 
@@ -110,13 +112,13 @@ export default function Setup() {
         audioContext.close();
         stream.getTracks().forEach(track => track.stop());
         setIsTestingAudio(false);
-        alert('Audio test completed!');
+        console.log('Audio test completed!');
       }, 500);
       
     } catch (error) {
       console.error('Audio test failed:', error);
       setIsTestingAudio(false);
-      alert('Audio test failed. Please check your microphone permissions.');
+      console.error('Audio test failed. Please check your microphone permissions.');
     }
   };
 
@@ -239,6 +241,24 @@ export default function Setup() {
               </div>
             </div>
             
+            <div className="form-control w-full">
+              <div className="flex items-center gap-4">
+                <div className="w-48">
+                  <label className="label-text">Moderator PIN (Optional)</label>
+                </div>
+                <div className="flex-1">
+                  <div className="text-xs text-base-content/60 mb-1">Conference moderator PIN for enhanced control</div>
+                  <input 
+                    type="text" 
+                    placeholder="54321" 
+                    className="input input-bordered w-full"
+                    value={sipConfig.moderatorPin || ''}
+                    onChange={(e) => handleSipConfigChange('moderatorPin', e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            
             <div className="alert alert-info mt-4">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" className="stroke-current shrink-0 w-6 h-6">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
@@ -249,6 +269,7 @@ export default function Setup() {
                   Default settings configured for FreeSWITCH on 10.254.18.165. 
                   This configuration works with the SIP.js phone implementation.
                   Select WS (port 5066) for unencrypted or WSS (port 7443) for encrypted WebSocket connections.
+                  The Moderator PIN (if configured) grants special conference control privileges when joining a conference.
                 </div>
               </div>
             </div>
