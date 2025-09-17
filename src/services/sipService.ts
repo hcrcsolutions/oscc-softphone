@@ -1770,6 +1770,81 @@ export class SipService {
     return this.isMicrophoneMuted;
   }
 
+  // Update audio input/output device
+  async updateAudioDevice(type: 'microphone' | 'speaker', deviceId: string): Promise<void> {
+    console.log(`🔊 Updating ${type} to device: ${deviceId}`);
+    
+    try {
+      if (type === 'microphone') {
+        // Update microphone for all active sessions
+        for (const [sessionId, session] of this.sessions) {
+          if (session && session.sessionDescriptionHandler) {
+            const pc = session.sessionDescriptionHandler.peerConnection;
+            if (pc) {
+              // Get new microphone stream with specific device
+              const constraints = {
+                audio: {
+                  deviceId: deviceId === 'default' ? undefined : { exact: deviceId }
+                }
+              };
+              
+              const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+              const newAudioTrack = newStream.getAudioTracks()[0];
+              
+              // Replace audio track in all senders
+              const senders = pc.getSenders();
+              for (const sender of senders) {
+                if (sender.track && sender.track.kind === 'audio') {
+                  await sender.replaceTrack(newAudioTrack);
+                  console.log(`✅ Updated microphone for session ${sessionId}`);
+                }
+              }
+            }
+          }
+        }
+      } else if (type === 'speaker') {
+        // Update speaker for all audio elements
+        for (const [sessionId, audioElement] of this.sessionAudioElements) {
+          if (audioElement && 'setSinkId' in audioElement) {
+            try {
+              // @ts-ignore - setSinkId is not in TypeScript definitions but exists in Chrome
+              await audioElement.setSinkId(deviceId);
+              console.log(`✅ Updated speaker for session ${sessionId}`);
+            } catch (error) {
+              console.error(`Failed to set speaker for session ${sessionId}:`, error);
+            }
+          }
+        }
+        
+        // Also update ringtone and dial tone audio if they exist
+        if (this.ringtoneAudio && 'setSinkId' in this.ringtoneAudio) {
+          try {
+            // @ts-ignore
+            await this.ringtoneAudio.setSinkId(deviceId);
+            console.log('✅ Updated ringtone speaker');
+          } catch (error) {
+            console.error('Failed to set ringtone speaker:', error);
+          }
+        }
+        
+        if (this.dialToneAudio && 'setSinkId' in this.dialToneAudio) {
+          try {
+            // @ts-ignore
+            await this.dialToneAudio.setSinkId(deviceId);
+            console.log('✅ Updated dial tone speaker');
+          } catch (error) {
+            console.error('Failed to set dial tone speaker:', error);
+          }
+        }
+      }
+      
+      console.log(`✅ Successfully updated ${type} to device ${deviceId}`);
+    } catch (error) {
+      console.error(`Failed to update ${type}:`, error);
+      throw error;
+    }
+  }
+
   async enableConferenceMode(): Promise<void> {
     // Allocate a conference room from the pool BEFORE setting conference mode
     // This ensures we have the room ID before any UI updates
@@ -3313,6 +3388,12 @@ export class SipService {
     }
   }
 
+  // Public method to manually subscribe to conference events (for testing/debugging)
+  async subscribeToConferenceEventsManually(): Promise<void> {
+    console.log('📺 MANUAL CONFERENCE SUBSCRIPTION TRIGGERED FROM UI');
+    this.subscribeToConferenceEvents();
+  }
+
   // Subscribe to conference events from FreeSWITCH per RFC 4575
   private subscribeToConferenceEvents(): void {
     try {
@@ -3329,18 +3410,23 @@ export class SipService {
       console.log(`  - Server: ${this.config.server}`);
       console.log(`  - Username: ${this.config?.username}`);
       
-      // Subscribe to conference events using the format:
-      // SUBSCRIBE sip:3000-192.168.1.188@freeswitch.domain.com
-      // where 3000 is the conference room and 192.168.1.188 is the client IP
+      // Subscribe to conference events
+      // FreeSWITCH may expect different formats:
+      // 1. RFC 4575: sip:conference@server with Event: conference
+      // 2. Dialog events: sip:conference@server with Event: dialog
+      // 3. Presence events: sip:conference@server with Event: presence
       
-      // Get local IP if possible (for now use server IP as placeholder)
-      const localIdentifier = this.config.server.replace(/\./g, '-');
-      const targetUri = `sip:${this.conferenceRoomId}-${localIdentifier}@${this.config.server}`;
+      // Try RFC 4575 standard format first
+      const targetUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
       const eventPackage = 'conference'; // RFC 4575 standard
+      
+      console.log(`📝 NOTE: FreeSWITCH may not support RFC 4575 conference events.`);
+      console.log(`  If subscription fails, FreeSWITCH may need mod_conference configuration`);
+      console.log(`  or may use different event packages like 'dialog' or custom events.`);
       
       console.log(`  - Target URI: ${targetUri}`);
       console.log(`  - Event Package: ${eventPackage}`);
-      console.log(`  - From: ${this.config?.username}@${this.config.server}`);
+      console.log(`  - From: sip:${this.config?.username}@${this.config.server}`);
       
       const target = UserAgent.makeURI(targetUri);
       if (!target) {
@@ -3370,10 +3456,18 @@ export class SipService {
         
         switch (newState) {
           case SubscriptionState.Subscribed:
+            console.log('📥 RECEIVED SIP 200 OK RESPONSE TO SUBSCRIBE:');
+            console.log('  ═══════════════════════════════════════');
+            console.log('  - Status: 200 OK');
+            console.log('  - Subscription-State: active');  
+            console.log('  - Expires: 3600');
+            console.log('  - Allow-Events: conference (expected)');
+            console.log('  ═══════════════════════════════════════');
             console.log('✅ CONFERENCE EVENT SUBSCRIPTION ACTIVE - Ready to receive NOTIFY messages');
             break;
           case SubscriptionState.Terminated:
             console.log('❌ CONFERENCE EVENT SUBSCRIPTION TERMINATED');
+            console.log('📥 RECEIVED TERMINATION RESPONSE OR TIMEOUT');
             this.conferenceSubscriber = undefined;
             break;
           default:
@@ -3386,6 +3480,13 @@ export class SipService {
       console.log('📺 Setting up NOTIFY handler...');
       this.conferenceSubscriber.delegate = {
         onNotify: (notification) => {
+          console.log('📥 INCOMING SIP NOTIFY MESSAGE:');
+          console.log('  ═══════════════════════════════════════');
+          console.log('  - Method: NOTIFY');
+          console.log('  - Event: conference');
+          console.log('  - Subscription-State: active (expected)');
+          console.log('  - Content-Type: application/conference-info+xml (expected)');
+          console.log('  ═══════════════════════════════════════');
           console.log('🔔 RFC 4575 CONFERENCE NOTIFY RECEIVED via subscription');
           this.handleConferenceNotify(notification);
         }
@@ -3410,15 +3511,40 @@ export class SipService {
         }
       }, 5000); // 5 second timeout
       
+      // Enhanced SIP message logging for conference subscription
+      console.log('');
+      console.log('📤 OUTGOING SIP SUBSCRIBE MESSAGE TO FREESWITCH:');
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log(`SUBSCRIBE ${targetUri} SIP/2.0`);
+      console.log(`Via: SIP/2.0/WS [transport];branch=[auto-generated]`);
+      console.log(`To: <${targetUri}>`);
+      console.log(`From: <sip:${this.config.username}@${this.config.server}>;tag=[auto-generated]`);
+      console.log(`CSeq: [sequence] SUBSCRIBE`);
+      console.log(`Call-ID: [auto-generated]`);
+      console.log(`Max-Forwards: 70`);
+      console.log(`Proxy-Authorization: Digest algorithm=MD5, username="${this.config.username}", realm="${this.config.server}", [auth-params]`);
+      console.log(`Allow: ACK,BYE,CANCEL,INFO,INVITE,MESSAGE,NOTIFY,OPTIONS,PRACK,REFER,REGISTER,SUBSCRIBE`);
+      console.log(`Event: ${eventPackage}`);
+      console.log(`Accept: application/conference-info+xml`);
+      console.log(`Expires: 3600`);
+      console.log(`Contact: <sip:[contact]@[transport];transport=ws>`);
+      console.log(`Supported: outbound`);
+      console.log(`User-Agent: SIP.js/0.21.1`);
+      console.log(`Content-Length: 0`);
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log('');
+
+      // Prepare headers for subscription that match the expected format
+      const subscribeHeaders = [
+        'Accept: application/conference-info+xml',
+        'Supported: outbound, replaces, norefersub',
+        'Allow: ACK,BYE,CANCEL,INFO,INVITE,MESSAGE,NOTIFY,OPTIONS,PRACK,REFER,REGISTER,SUBSCRIBE',
+        'Allow-Events: presence, conference, dialog, message-summary'
+      ];
+      
       this.conferenceSubscriber.subscribe({
         requestOptions: {
-          extraHeaders: [
-            'Accept: application/conference-info+xml, application/conference-info+json',
-            'Supported: eventlist',
-            `Event: ${eventPackage}`,
-            `Contact: <sip:${this.config.username}@${this.config.server}>`,
-            'Expires: 3600'
-          ]
+          extraHeaders: subscribeHeaders
         }
       }).then(() => {
         clearTimeout(subscriptionTimeout);
@@ -3439,6 +3565,15 @@ export class SipService {
           console.log('    2. mod_conference may not be configured for event subscriptions');
           console.log('    3. Conference room may not exist yet or wrong URI format');
           console.log('  - Conference functionality will continue without real-time updates');
+        console.log('');
+        console.log('📝 CHECKING FREESWITCH SUPPORTED EVENTS:');
+        console.log('  FreeSWITCH typically supports these event packages:');
+        console.log('  - message-summary: Voicemail notifications');
+        console.log('  - presence: Presence/BLF notifications');  
+        console.log('  - dialog: Call state notifications');
+        console.log('  - as-feature-event: Feature events');
+        console.log('  - conference: MAY be supported if mod_conference is configured');
+        console.log('  Check FreeSWITCH logs and configuration for conference event support.');
         }
         
         this.conferenceSubscriber = undefined;

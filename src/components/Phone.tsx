@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay, TbUsers, TbUserPlus, TbMicrophone, TbMicrophoneOff } from 'react-icons/tb';
 import { SipService, CallState, SipConfig, CallInfo } from '@/services/sipService';
 import ActiveCallManager from '@/components/ActiveCallManager';
+import AudioDeviceSelector from '@/components/AudioDeviceSelector';
 
 interface PhoneProps {
   theme: string;
@@ -544,8 +545,8 @@ export default function Phone({ theme }: PhoneProps) {
         
         {/* Main content area with side-by-side layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left column: Active Call Management */}
-          <div>
+          {/* Left column: Active Call Management and Audio Devices */}
+          <div className="space-y-4">
             <ActiveCallManager 
               sipService={sipService.current} 
               isConferenceMode={isConferenceMode}
@@ -556,6 +557,17 @@ export default function Phone({ theme }: PhoneProps) {
               onEndCall={handleEndCall}
               onSwitchToCall={handleSwitchToCall}
               formatElapsedTime={formatElapsedTime}
+            />
+            
+            {/* Audio Device Selector */}
+            <AudioDeviceSelector 
+              sipService={sipService.current}
+              onMicrophoneChange={(deviceId) => {
+                console.log('Microphone changed to:', deviceId);
+              }}
+              onSpeakerChange={(deviceId) => {
+                console.log('Speaker changed to:', deviceId);
+              }}
             />
           </div>
           

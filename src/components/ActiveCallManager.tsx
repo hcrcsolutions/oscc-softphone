@@ -373,26 +373,46 @@ export default function ActiveCallManager({
           {/* Conference controls or multi-call actions */}
           <div className="flex gap-2">
             {isConferenceMode ? (
-              // End Conference button
-              <button
-                onClick={async () => {
-                  if (!sipService || isConferenceProcessing) return;
-                  
-                  try {
-                    setIsConferenceProcessing(true);
-                    await sipService.disableConferenceMode();
-                  } catch (error) {
-                    console.error('Failed to end conference:', error);
-                  } finally {
-                    setIsConferenceProcessing(false);
-                  }
-                }}
-                disabled={isConferenceProcessing}
-                className={`btn btn-sm btn-error ${isConferenceProcessing ? 'loading' : ''}`}
-                title={isConferenceProcessing ? 'Ending conference...' : 'End conference for all participants'}
-              >
-                {isConferenceProcessing ? 'Ending...' : '🔚 End Conference'}
-              </button>
+              <>
+                {/* Subscribe to Conference Events button */}
+                <button
+                  onClick={async () => {
+                    if (!sipService) return;
+                    
+                    try {
+                      console.log('📺 Manual conference subscription requested from UI');
+                      await sipService.subscribeToConferenceEventsManually();
+                    } catch (error) {
+                      console.error('Failed to subscribe to conference events:', error);
+                    }
+                  }}
+                  className="btn btn-sm btn-info"
+                  title="Subscribe to conference event notifications"
+                >
+                  🔔 Subscribe Events
+                </button>
+                
+                {/* End Conference button */}
+                <button
+                  onClick={async () => {
+                    if (!sipService || isConferenceProcessing) return;
+                    
+                    try {
+                      setIsConferenceProcessing(true);
+                      await sipService.disableConferenceMode();
+                    } catch (error) {
+                      console.error('Failed to end conference:', error);
+                    } finally {
+                      setIsConferenceProcessing(false);
+                    }
+                  }}
+                  disabled={isConferenceProcessing}
+                  className={`btn btn-sm btn-error ${isConferenceProcessing ? 'loading' : ''}`}
+                  title={isConferenceProcessing ? 'Ending conference...' : 'End conference for all participants'}
+                >
+                  {isConferenceProcessing ? 'Ending...' : '🔚 End Conference'}
+                </button>
+              </>
             ) : (
               // Conference All button for multiple calls
               activeCalls.length > 1 && (
