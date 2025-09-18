@@ -122,8 +122,6 @@ export default function AudioDeviceSelector({
       setMicrophones(audioInputs);
       setSpeakers(audioOutputs);
       
-      console.log('🎤 Found microphones:', audioInputs.length);
-      console.log('🔊 Found speakers:', audioOutputs.length);
       
     } catch (error) {
       console.error('Failed to enumerate devices:', error);
@@ -186,10 +184,8 @@ export default function AudioDeviceSelector({
       
       try {
         micStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('🎤 Got microphone stream for monitoring device:', selectedMicrophone);
       } catch (constraintError) {
         // If the selected device fails, try with the default device
-        console.warn('Failed to get microphone with deviceId, trying default:', constraintError);
         constraints = { 
           audio: {
             echoCancellation: true,
@@ -218,8 +214,6 @@ export default function AudioDeviceSelector({
       outputAnalyserRef.current.maxDecibels = -10;
       
       setIsMonitoring(true);
-      console.log('🎤 Audio monitoring started with AudioContext:', audioContextRef.current.state);
-      console.log('🎤 Analyser settings - FFT Size:', analyserRef.current.fftSize, 'Smoothing:', analyserRef.current.smoothingTimeConstant);
       
     } catch (error) {
       console.error('Failed to start audio monitoring:', error);
@@ -250,7 +244,6 @@ export default function AudioDeviceSelector({
     setInputLevel(0);
     setOutputLevel(0);
     setIsMonitoring(false);
-    console.log('🎤 Audio monitoring stopped');
   };
   
   // Update audio levels
@@ -333,21 +326,10 @@ export default function AudioDeviceSelector({
     try {
       // Look for ALL audio elements, including those created by SIP.js
       const audioElements = document.querySelectorAll('audio');
-      console.log(`🔊 Found ${audioElements.length} audio element(s) on page`);
       
       for (let i = 0; i < audioElements.length; i++) {
         const audio = audioElements[i] as HTMLAudioElement;
         
-        console.log(`🔊 Checking audio element ${i}:`, {
-          id: audio.id || 'no-id',
-          srcObject: !!audio.srcObject,
-          src: audio.src || 'no-src',
-          paused: audio.paused,
-          readyState: audio.readyState,
-          volume: audio.volume,
-          muted: audio.muted,
-          monitored: audio.dataset.monitored
-        });
         
         // Skip if already monitored
         if (audio.dataset.monitored === 'true') continue;
@@ -357,7 +339,6 @@ export default function AudioDeviceSelector({
           const stream = audio.srcObject as MediaStream;
           const audioTracks = stream.getAudioTracks();
           
-          console.log(`🔊 Audio element ${i} has MediaStream with ${audioTracks.length} audio tracks`);
           
           if (audioTracks.length === 0) continue;
           
@@ -376,24 +357,19 @@ export default function AudioDeviceSelector({
             // Mark as monitored
             audio.dataset.monitored = 'true';
             
-            console.log('🔊 ✅ Successfully connected to remote audio stream for monitoring');
-            console.log(`   Stream ID: ${stream.id}`);
-            console.log(`   Audio tracks: ${audioTracks.map(t => `${t.kind}:${t.label}:${t.enabled}`).join(', ')}`);
             
             // Only monitor the first stream we successfully connect to
             return;
             
           } catch (error) {
-            console.log(`🔊 ❌ Failed to connect to stream on element ${i}:`, error);
           }
         }
       }
       
       // If we get here, no streams were found or connected
-      console.log('🔊 No active MediaStreams found for output monitoring');
       
     } catch (error) {
-      console.error('🔊 Error in connectToRemoteMediaStreams:', error);
+      console.error('Error in connectToRemoteMediaStreams:', error);
     }
   }, [sipService]);
 
@@ -434,7 +410,6 @@ export default function AudioDeviceSelector({
 
     // Listen for device changes (when devices are plugged/unplugged)
     const handleDeviceChange = () => {
-      console.log('Audio devices changed, re-enumerating...');
       enumerateDevices();
     };
 
@@ -448,7 +423,6 @@ export default function AudioDeviceSelector({
 
   // Handle microphone selection
   const handleMicrophoneChange = async (deviceId: string) => {
-    console.log('🎤 Microphone selected:', deviceId);
     setSelectedMicrophone(deviceId);
     
     // Save to localStorage
@@ -474,7 +448,6 @@ export default function AudioDeviceSelector({
 
   // Handle speaker selection
   const handleSpeakerChange = async (deviceId: string) => {
-    console.log('🔊 Speaker selected:', deviceId);
     setSelectedSpeaker(deviceId);
     
     // Save to localStorage
@@ -500,7 +473,6 @@ export default function AudioDeviceSelector({
 
   // Refresh devices button
   const handleRefreshDevices = () => {
-    console.log('🔄 Refreshing audio devices...');
     enumerateDevices();
   };
 

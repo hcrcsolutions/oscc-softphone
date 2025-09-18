@@ -1915,7 +1915,6 @@ export class SipService {
         for (const [sessionId, audioElement] of this.sessionAudioElements) {
           if (audioElement && 'setSinkId' in audioElement) {
             try {
-              // @ts-ignore - setSinkId is not in TypeScript definitions but exists in Chrome
               await audioElement.setSinkId(deviceId);
               console.log(`✅ Updated speaker for session ${sessionId}`);
             } catch (error) {
@@ -1927,7 +1926,6 @@ export class SipService {
         // Also update ringtone and dial tone audio if they exist
         if (this.ringtoneAudio && 'setSinkId' in this.ringtoneAudio) {
           try {
-            // @ts-ignore
             await this.ringtoneAudio.setSinkId(deviceId);
             console.log('✅ Updated ringtone speaker');
           } catch (error) {
@@ -1937,7 +1935,6 @@ export class SipService {
         
         if (this.dialToneAudio && 'setSinkId' in this.dialToneAudio) {
           try {
-            // @ts-ignore
             await this.dialToneAudio.setSinkId(deviceId);
             console.log('✅ Updated dial tone speaker');
           } catch (error) {
