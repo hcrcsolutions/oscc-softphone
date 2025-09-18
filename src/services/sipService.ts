@@ -166,7 +166,7 @@ export class SipService {
           conferenceRoomId: this.conferenceRoomId
         });
       } else {
-        debugger; // Conference controls about to be hidden - going to idle
+        // Conference controls about to be hidden - going to idle
         this.onCallStateChanged?.({
           status: 'idle',
           activeCalls: []
@@ -960,7 +960,7 @@ export class SipService {
           if (this.activeSessionId === sessionId) {
             // Don't clear activeSessionId if we're in conference mode - need it for UI state
             if (!this.isConferenceMode) {
-              debugger; // About to clear activeSessionId - may hide conference controls
+              // About to clear activeSessionId - may hide conference controls
               this.activeSessionId = undefined;
             } else {
               console.log(`📞 Keeping activeSessionId in conference mode to maintain UI state`);
@@ -1210,7 +1210,7 @@ export class SipService {
               console.log(`📞 Clearing activeSessionId (was ${sessionId})`);
               // Don't clear activeSessionId if we're in conference mode - need it for UI state
               if (!this.isConferenceMode) {
-                debugger; // About to clear activeSessionId - may hide conference controls
+                // About to clear activeSessionId - may hide conference controls
                 this.activeSessionId = undefined;
               } else {
                 console.log(`📞 Keeping activeSessionId in conference mode to maintain UI state`);
@@ -3105,51 +3105,6 @@ export class SipService {
 
   getActiveCalls(): CallInfo[] {
     return this.getCallInfosArray().filter(call => !call.isOnHold);
-  }
-
-  // Emergency method to leave conference room when stuck (after browser reload)
-  async emergencyLeaveConference(): Promise<void> {
-    console.log('🆘 Emergency conference leave requested');
-    
-    // Try to find any conference room sessions
-    const conferenceSessions = Array.from(this.sessions.entries()).filter(
-      ([sessionId, session]) => sessionId.startsWith('conf_session_')
-    );
-    
-    if (conferenceSessions.length > 0) {
-      console.log(`Found ${conferenceSessions.length} conference sessions to terminate`);
-      
-      for (const [sessionId, session] of conferenceSessions) {
-        try {
-          console.log(`Terminating conference session ${sessionId}`);
-          if (session.bye && session.state === SessionState.Established) {
-            await session.bye();
-          } else if (session.terminate) {
-            await session.terminate();
-          }
-        } catch (error) {
-          console.error(`Failed to terminate conference session ${sessionId}:`, error);
-        }
-      }
-    }
-    
-    // Force disable conference mode
-    debugger; // Emergency conference cleanup - controls about to be hidden
-    this.isConferenceMode = false;
-    this.conferenceParticipants.clear();
-    this.conferenceParticipantInfos.clear();
-    this.pendingReferTransfers.clear();
-    this.successfulTransfers.clear();
-    
-    if (this.conferenceRoomId) {
-      await this.releaseConferenceRoom(this.conferenceRoomId);
-      this.conferenceRoomId = undefined;
-    }
-    
-    this.cleanupConferenceMixer();
-    this.updateCallState();
-    
-    console.log('🆘 Emergency conference leave completed');
   }
 
   // Set up event listeners on the conference session to receive notifications from FreeSWITCH
