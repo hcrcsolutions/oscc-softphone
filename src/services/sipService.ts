@@ -636,6 +636,14 @@ export class SipService {
       this.userAgent.delegate = {
         onInvite: (invitation) => {
           this.handleIncomingCall(invitation);
+        },
+        onNotify: (notification) => {
+          // Handle unsolicited NOTIFY messages from FreeSWITCH
+          this.handleUnsolicitedNotify(notification);
+        },
+        onMessage: (message) => {
+          // Handle MESSAGE requests
+          console.log('📨 Received SIP MESSAGE:', message);
         }
       };
 
@@ -689,6 +697,106 @@ export class SipService {
         errorCode
       });
       throw error;
+    }
+  }
+
+  // Handle unsolicited NOTIFY messages from FreeSWITCH
+  private handleUnsolicitedNotify(notification: any): void {
+    try {
+      console.log('📬 UNSOLICITED NOTIFY RECEIVED');
+      
+      // Extract event type
+      const event = notification.request?.getHeader?.('Event') || 
+                   notification.request?.headers?.Event?.[0]?.parsed ||
+                   notification.request?.headers?.event?.[0] ||
+                   'unknown';
+      
+      console.log(`  - Event Type: ${event}`);
+      
+      // Accept the NOTIFY to prevent 481 response
+      if (notification.accept) {
+        notification.accept();
+        console.log('  ✅ NOTIFY accepted (200 OK sent)');
+      }
+      
+      // Handle different event types
+      switch (event) {
+        case 'message-summary':
+          // Voicemail notification
+          this.handleMessageSummaryNotify(notification);
+          break;
+          
+        case 'presence':
+          // Presence notification
+          console.log('  - Presence notification received');
+          break;
+          
+        case 'dialog':
+          // Dialog state notification
+          console.log('  - Dialog notification received');
+          break;
+          
+        case 'conference':
+          // Conference event (unlikely to be unsolicited)
+          console.log('  - Conference notification received (unsolicited)');
+          this.handleConferenceNotify(notification);
+          break;
+          
+        default:
+          console.log(`  - Unknown event type: ${event}`);
+      }
+      
+    } catch (error) {
+      console.error('Error handling unsolicited NOTIFY:', error);
+      // Try to accept it anyway to avoid 481
+      if (notification.accept) {
+        try {
+          notification.accept();
+        } catch (acceptError) {
+          console.error('Failed to accept NOTIFY:', acceptError);
+        }
+      }
+    }
+  }
+  
+  // Handle message-summary (voicemail) notifications
+  private handleMessageSummaryNotify(notification: any): void {
+    try {
+      const body = notification.request?.body || 
+                  notification.request?.message?.body ||
+                  notification.body;
+                  
+      console.log('📬 MESSAGE-SUMMARY NOTIFY:');
+      console.log('  - Body:', body);
+      
+      if (body) {
+        // Parse message-summary body
+        const lines = body.split('\n');
+        let hasMessages = false;
+        let messageAccount = '';
+        
+        lines.forEach((line: string) => {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('Messages-Waiting:')) {
+            hasMessages = trimmed.toLowerCase().includes('yes');
+          } else if (trimmed.startsWith('Message-Account:')) {
+            messageAccount = trimmed.substring('Message-Account:'.length).trim();
+          }
+        });
+        
+        console.log(`  - Messages Waiting: ${hasMessages ? 'YES' : 'NO'}`);
+        console.log(`  - Account: ${messageAccount}`);
+        
+        // Emit event to update UI with voicemail status
+        if (hasMessages) {
+          this.emitEvent('voicemailWaiting', { 
+            hasMessages, 
+            account: messageAccount 
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error parsing message-summary:', error);
     }
   }
 
