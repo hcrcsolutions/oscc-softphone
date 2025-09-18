@@ -58,10 +58,35 @@ export default function Phone({ theme }: PhoneProps) {
         console.log('Cleaned up pre-initialized media');
       }
       
-      // Auto-unmute when call ends
-      if (state.status === 'idle' && isMicMuted) {
-        console.log('Call ended while muted, automatically unmuting microphone');
-        setIsMicMuted(false);
+      // Auto-unmute when call ends (idle, disconnected, or failed states)
+      if (state.status === 'idle' || state.status === 'disconnected' || state.status === 'failed') {
+        // Check both UI state and service state to handle all cases
+        const serviceIsMuted = sipService.current?.isMicMuted() || false;
+        if (isMicMuted || serviceIsMuted) {
+          console.log('Call ended while muted (UI or Service), automatically unmuting microphone');
+          console.log(`  UI muted: ${isMicMuted}, Service muted: ${serviceIsMuted}`);
+          
+          // Always set UI to unmuted
+          setIsMicMuted(false);
+          
+          // Unmute in service if needed
+          if (sipService.current && serviceIsMuted) {
+            sipService.current.unmuteMicrophone().then(() => {
+              console.log('✅ Successfully unmuted microphone in service');
+            }).catch((error) => {
+              console.warn('Failed to unmute microphone in service:', error);
+            });
+          }
+        }
+      }
+      
+      // Sync UI state when call connects or is connecting
+      if ((state.status === 'connected' || state.status === 'connecting') && sipService.current) {
+        const serviceIsMuted = sipService.current.isMicMuted();
+        if (serviceIsMuted !== isMicMuted) {
+          console.log(`Syncing mute state on call ${state.status}: UI=${isMicMuted}, Service=${serviceIsMuted}`);
+          setIsMicMuted(serviceIsMuted);
+        }
       }
       // Handle per-call timers
       if (state.status === 'connected' && state.sessionId) {
@@ -569,6 +594,7 @@ export default function Phone({ theme }: PhoneProps) {
             <AudioDeviceSelector 
               sipService={sipService.current}
               isMicrophoneMuted={isMicMuted}
+              isInActiveCall={callState.status === 'connected' || callState.status === 'ringing'}
               onMicrophoneChange={(deviceId) => {
                 console.log('Microphone changed to:', deviceId);
               }}

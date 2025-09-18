@@ -14,13 +14,15 @@ interface AudioDeviceSelectorProps {
   onSpeakerChange?: (deviceId: string) => void;
   sipService?: any;
   isMicrophoneMuted?: boolean;
+  isInActiveCall?: boolean;
 }
 
 export default function AudioDeviceSelector({ 
   onMicrophoneChange, 
   onSpeakerChange,
   sipService,
-  isMicrophoneMuted = false 
+  isMicrophoneMuted = false,
+  isInActiveCall = false 
 }: AudioDeviceSelectorProps) {
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
   const [speakers, setSpeakers] = useState<AudioDevice[]>([]);
@@ -86,7 +88,7 @@ export default function AudioDeviceSelector({
         .filter(device => device.kind === 'audioinput')
         .map((device, index) => ({
           deviceId: device.deviceId,
-          label: device.label || `Microphone ${index + 1}`,
+          label: device.label ? device.label.replace(/\s*\([^)]*\)\s*$/, '') : `Microphone ${index + 1}`,
           kind: 'audioinput' as const
         }));
 
@@ -95,7 +97,7 @@ export default function AudioDeviceSelector({
         .filter(device => device.kind === 'audiooutput')
         .map((device, index) => ({
           deviceId: device.deviceId,
-          label: device.label || `Speaker ${index + 1}`,
+          label: device.label ? device.label.replace(/\s*\([^)]*\)\s*$/, '') : `Speaker ${index + 1}`,
           kind: 'audiooutput' as const
         }));
 
@@ -157,46 +159,66 @@ export default function AudioDeviceSelector({
         return;
       }
       
-      // Get microphone stream with fallback
+      // Use the same constraints as the SIP service for consistency
       let constraints: MediaStreamConstraints;
       
       if (selectedMicrophone === 'default' || !selectedMicrophone) {
-        // Use default device
-        constraints = { audio: true };
+        // Match SIP service default constraints with echo cancellation
+        constraints = { 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        };
       } else {
-        // Use ideal instead of exact for better compatibility
+        // Use ideal device ID with audio processing
         constraints = {
           audio: {
-            deviceId: { ideal: selectedMicrophone }
+            deviceId: { ideal: selectedMicrophone },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
           }
         };
       }
       
       try {
         micStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('🎤 Got microphone stream for device:', selectedMicrophone);
+        console.log('🎤 Got microphone stream for monitoring device:', selectedMicrophone);
       } catch (constraintError) {
         // If the selected device fails, try with the default device
         console.warn('Failed to get microphone with deviceId, trying default:', constraintError);
-        constraints = { audio: true };
+        constraints = { 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        };
         micStreamRef.current = await navigator.mediaDevices.getUserMedia(constraints);
       }
       
-      // Create analyser for input
+      // Create analyser for input with more sensitive settings
       analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      analyserRef.current.smoothingTimeConstant = 0.8;
+      analyserRef.current.fftSize = 1024; // Increased for better resolution
+      analyserRef.current.smoothingTimeConstant = 0.3; // Less smoothing for more responsive levels
+      analyserRef.current.minDecibels = -90;
+      analyserRef.current.maxDecibels = -10;
       
       const source = audioContextRef.current.createMediaStreamSource(micStreamRef.current);
       source.connect(analyserRef.current);
       
       // Create analyser for output monitoring
       outputAnalyserRef.current = audioContextRef.current.createAnalyser();
-      outputAnalyserRef.current.fftSize = 256;
-      outputAnalyserRef.current.smoothingTimeConstant = 0.8;
+      outputAnalyserRef.current.fftSize = 1024;
+      outputAnalyserRef.current.smoothingTimeConstant = 0.3;
+      outputAnalyserRef.current.minDecibels = -90;
+      outputAnalyserRef.current.maxDecibels = -10;
       
       setIsMonitoring(true);
       console.log('🎤 Audio monitoring started with AudioContext:', audioContextRef.current.state);
+      console.log('🎤 Analyser settings - FFT Size:', analyserRef.current.fftSize, 'Smoothing:', analyserRef.current.smoothingTimeConstant);
       
     } catch (error) {
       console.error('Failed to start audio monitoring:', error);
@@ -232,45 +254,63 @@ export default function AudioDeviceSelector({
   
   // Update audio levels
   const updateAudioLevels = () => {
-    // Update input level from microphone (show 0 if muted)
-    if (analyserRef.current && !isMicrophoneMuted) {
+    // Update input level from microphone (show 0 if muted or not in active call)
+    if (analyserRef.current && !isMicrophoneMuted && isInActiveCall) {
       const inputArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-      analyserRef.current.getByteTimeDomainData(inputArray);
+      analyserRef.current.getByteFrequencyData(inputArray);
       
-      // Calculate RMS (Root Mean Square) for input using time domain data
+      // Calculate average frequency data for better microphone level detection
       let inputSum = 0;
-      for (let i = 0; i < inputArray.length; i++) {
-        const sample = (inputArray[i] - 128) / 128; // Convert to -1 to 1 range
-        inputSum += sample * sample;
+      let maxLevel = 0;
+      
+      // Focus on the frequency range most relevant for voice (300Hz - 3400Hz)
+      // With 1024 FFT size and typical sample rate 48kHz, each bin is ~23Hz
+      // So bins 13-148 cover roughly 300Hz-3400Hz
+      const startBin = Math.floor(inputArray.length * 0.025); // ~300Hz
+      const endBin = Math.floor(inputArray.length * 0.15);    // ~3400Hz
+      
+      for (let i = startBin; i < endBin && i < inputArray.length; i++) {
+        const level = inputArray[i] / 255;
+        inputSum += level;
+        maxLevel = Math.max(maxLevel, level);
       }
-      const inputRMS = Math.sqrt(inputSum / inputArray.length);
-      // Amplify the signal for better visual feedback
-      setInputLevel(Math.min(inputRMS * 200, 100));
+      
+      const avgLevel = inputSum / (endBin - startBin);
+      // Use combination of average and peak for responsive but stable indication
+      const combinedLevel = (avgLevel * 0.7) + (maxLevel * 0.3);
+      
+      // More aggressive amplification for microphone levels
+      setInputLevel(Math.min(combinedLevel * 400, 100));
     } else {
       setInputLevel(0);
     }
     
-    // Update output level from remote media streams
-    if (outputAnalyserRef.current) {
+    // Update output level from remote media streams (only during active calls)
+    if (outputAnalyserRef.current && isInActiveCall) {
       const outputArray = new Uint8Array(outputAnalyserRef.current.frequencyBinCount);
-      outputAnalyserRef.current.getByteTimeDomainData(outputArray);
+      outputAnalyserRef.current.getByteFrequencyData(outputArray);
       
-      // Calculate RMS for output from FreeSWITCH media using time domain data
+      // Calculate output level using frequency domain data (like input)
       let outputSum = 0;
-      let hasSignal = false;
-      for (let i = 0; i < outputArray.length; i++) {
-        const sample = (outputArray[i] - 128) / 128; // Convert to -1 to 1 range
-        outputSum += sample * sample;
-        // Check if there's actual audio signal (not silence)
-        if (Math.abs(sample) > 0.01) {
-          hasSignal = true;
-        }
+      let maxLevel = 0;
+      
+      // Focus on voice frequency range for output as well
+      const startBin = Math.floor(outputArray.length * 0.025); // ~300Hz
+      const endBin = Math.floor(outputArray.length * 0.15);    // ~3400Hz
+      
+      for (let i = startBin; i < endBin && i < outputArray.length; i++) {
+        const level = outputArray[i] / 255;
+        outputSum += level;
+        maxLevel = Math.max(maxLevel, level);
       }
       
-      if (hasSignal) {
-        const outputRMS = Math.sqrt(outputSum / outputArray.length);
-        // Amplify the signal for better visual feedback
-        setOutputLevel(Math.min(outputRMS * 200, 100));
+      if (outputSum > 0) {
+        const avgLevel = outputSum / (endBin - startBin);
+        // Use combination of average and peak for consistent behavior with input
+        const combinedLevel = (avgLevel * 0.7) + (maxLevel * 0.3);
+        
+        // More aggressive amplification for output levels to match input sensitivity
+        setOutputLevel(Math.min(combinedLevel * 400, 100));
       } else {
         setOutputLevel(0);
       }
@@ -286,77 +326,73 @@ export default function AudioDeviceSelector({
   // Connect to remote media streams for output monitoring
   const connectToRemoteMediaStreams = useCallback(() => {
     if (!sipService || !outputAnalyserRef.current || !audioContextRef.current) {
-      if (!audioContextRef.current) {
-        console.log('AudioContext not initialized yet, skipping remote stream connection');
-      }
       return;
     }
 
     try {
-      // Look for audio elements with active media streams
+      // Look for ALL audio elements, including those created by SIP.js
       const audioElements = document.querySelectorAll('audio');
+      console.log(`🔊 Found ${audioElements.length} audio element(s) on page`);
       
-      for (const audioElement of audioElements) {
-        const audio = audioElement as HTMLAudioElement;
+      for (let i = 0; i < audioElements.length; i++) {
+        const audio = audioElements[i] as HTMLAudioElement;
+        
+        console.log(`🔊 Checking audio element ${i}:`, {
+          id: audio.id || 'no-id',
+          srcObject: !!audio.srcObject,
+          src: audio.src || 'no-src',
+          paused: audio.paused,
+          readyState: audio.readyState,
+          volume: audio.volume,
+          muted: audio.muted,
+          monitored: audio.dataset.monitored
+        });
         
         // Skip if already monitored
         if (audio.dataset.monitored === 'true') continue;
         
         // Check if this audio element has a media stream
-        if (!audio.srcObject) continue;
-        
-        const stream = audio.srcObject as MediaStream;
-        const audioTracks = stream.getAudioTracks();
-        
-        // Skip if no audio tracks
-        if (audioTracks.length === 0) continue;
-        
-        console.log(`🔊 Found audio element with ${audioTracks.length} audio track(s), attempting to monitor`);
-        
-        try {
-          // Create a media stream source from the remote audio stream
-          const streamSource = audioContextRef.current!.createMediaStreamSource(stream);
+        if (audio.srcObject && audio.srcObject instanceof MediaStream) {
+          const stream = audio.srcObject as MediaStream;
+          const audioTracks = stream.getAudioTracks();
           
-          // Create a gain node for monitoring without affecting playback
-          const monitorGain = audioContextRef.current!.createGain();
-          monitorGain.gain.value = 1.0; // Keep full volume for monitoring
+          console.log(`🔊 Audio element ${i} has MediaStream with ${audioTracks.length} audio tracks`);
           
-          // Connect: Stream -> Monitor Gain -> Analyser
-          streamSource.connect(monitorGain);
-          monitorGain.connect(outputAnalyserRef.current!);
+          if (audioTracks.length === 0) continue;
           
-          // Don't connect to destination - let the original audio element handle playback
-          // This avoids double audio playback
-          
-          // Mark as monitored to avoid reconnecting
-          audio.dataset.monitored = 'true';
-          
-          console.log('🔊 Successfully connected to remote WebRTC audio stream for level monitoring');
-          console.log(`   Audio tracks: ${audioTracks.map(t => `${t.label} (${t.enabled ? 'enabled' : 'disabled'})`).join(', ')}`);
-          console.log(`   Stream ID: ${stream.id}`);
-          console.log(`   Audio element playing: ${!audio.paused}`);
-          
-          // Only monitor the first active stream
-          return;
-          
-        } catch (error) {
-          // This error might occur if the stream was already connected to another source
-          // Try an alternative approach using a clone of the stream
           try {
-            console.log('🔊 First attempt failed, trying with cloned stream');
-            const clonedStream = stream.clone();
-            const clonedSource = audioContextRef.current!.createMediaStreamSource(clonedStream);
-            clonedSource.connect(outputAnalyserRef.current!);
+            // Create a media stream source from the remote audio stream
+            const streamSource = audioContextRef.current!.createMediaStreamSource(stream);
+            
+            // Create a gain node for monitoring
+            const monitorGain = audioContextRef.current!.createGain();
+            monitorGain.gain.value = 1.0;
+            
+            // Connect: Stream -> Monitor Gain -> Analyser
+            streamSource.connect(monitorGain);
+            monitorGain.connect(outputAnalyserRef.current!);
+            
+            // Mark as monitored
             audio.dataset.monitored = 'true';
-            console.log('🔊 Successfully connected cloned stream for monitoring');
+            
+            console.log('🔊 ✅ Successfully connected to remote audio stream for monitoring');
+            console.log(`   Stream ID: ${stream.id}`);
+            console.log(`   Audio tracks: ${audioTracks.map(t => `${t.kind}:${t.label}:${t.enabled}`).join(', ')}`);
+            
+            // Only monitor the first stream we successfully connect to
             return;
-          } catch (cloneError) {
-            console.log('Could not connect to media stream:', cloneError);
+            
+          } catch (error) {
+            console.log(`🔊 ❌ Failed to connect to stream on element ${i}:`, error);
           }
         }
       }
+      
+      // If we get here, no streams were found or connected
+      console.log('🔊 No active MediaStreams found for output monitoring');
+      
     } catch (error) {
-      console.log('Error in connectToRemoteMediaStreams:', error);
+      console.error('🔊 Error in connectToRemoteMediaStreams:', error);
     }
   }, [sipService]);
 
@@ -369,10 +405,10 @@ export default function AudioDeviceSelector({
       // Try to connect immediately
       connectToRemoteMediaStreams();
       
-      // Monitor for remote media streams every 500ms for faster detection
+      // Monitor for remote media streams every 250ms for faster detection
       const mediaMonitorInterval = setInterval(() => {
         connectToRemoteMediaStreams();
-      }, 500);
+      }, 250);
       
       return () => {
         stopAudioMonitoring();
@@ -547,6 +583,7 @@ export default function AudioDeviceSelector({
               <div className="flex items-center gap-1">
                 <div className="text-xs text-base-content/60">IN</div>
                 <div className={`w-16 h-12 rounded-sm overflow-hidden flex items-end ${
+                  !isInActiveCall ? 'bg-gray-200' : 
                   isMicrophoneMuted ? 'bg-pink-200' : 'bg-base-300'
                 }`}>
                   {/* Segmented level meter */}
@@ -555,7 +592,7 @@ export default function AudioDeviceSelector({
                       <div 
                         key={i}
                         className={`w-full flex-1 transition-all duration-100 ${
-                          !isMicrophoneMuted && inputLevel > i * 6.25 
+                          isInActiveCall && !isMicrophoneMuted && inputLevel > i * 6.25 
                             ? 'bg-gray-400' 
                             : 'bg-transparent'
                         }`}
@@ -564,7 +601,8 @@ export default function AudioDeviceSelector({
                   </div>
                 </div>
                 <div className="text-xs font-mono w-8 text-right">
-                  {isMicrophoneMuted ? 'MUTED' : `${Math.round(inputLevel)}%`}
+                  {!isInActiveCall ? 'IDLE' :
+                   isMicrophoneMuted ? 'MUTED' : `${Math.round(inputLevel)}%`}
                 </div>
               </div>
             </div>
@@ -597,14 +635,16 @@ export default function AudioDeviceSelector({
               {/* Audio Output Level Meter */}
               <div className="flex items-center gap-1">
                 <div className="text-xs text-base-content/60">OUT</div>
-                <div className="w-16 h-12 bg-base-300 rounded-sm overflow-hidden flex items-end">
+                <div className={`w-16 h-12 rounded-sm overflow-hidden flex items-end ${
+                  !isInActiveCall ? 'bg-gray-200' : 'bg-base-300'
+                }`}>
                   {/* Segmented level meter */}
                   <div className="w-full h-full flex flex-col-reverse gap-px">
                     {[...Array(16)].map((_, i) => (
                       <div 
                         key={i}
                         className={`w-full flex-1 transition-all duration-100 ${
-                          outputLevel > i * 6.25 
+                          isInActiveCall && outputLevel > i * 6.25 
                             ? 'bg-gray-400' 
                             : 'bg-transparent'
                         }`}
@@ -613,7 +653,7 @@ export default function AudioDeviceSelector({
                   </div>
                 </div>
                 <div className="text-xs font-mono w-8 text-right">
-                  {Math.round(outputLevel)}%
+                  {!isInActiveCall ? 'IDLE' : `${Math.round(outputLevel)}%`}
                 </div>
               </div>
             </div>
