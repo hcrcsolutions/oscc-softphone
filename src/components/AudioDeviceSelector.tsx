@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { TbMicrophone, TbVolume } from 'react-icons/tb';
+import AudioLevelMeter from '@/components/AudioLevelMeter';
 
 interface AudioDevice {
   deviceId: string;
@@ -580,31 +581,13 @@ export default function AudioDeviceSelector({
               </select>
               
               {/* Audio Input Level Meter */}
-              <div className="flex items-center gap-1">
-                <div className="text-xs text-base-content/60">IN</div>
-                <div className={`w-16 h-12 rounded-sm overflow-hidden flex items-end ${
-                  !isInActiveCall ? 'bg-gray-200' : 
-                  isMicrophoneMuted ? 'bg-pink-200' : 'bg-base-300'
-                }`}>
-                  {/* Segmented level meter */}
-                  <div className="w-full h-full flex flex-col-reverse gap-px">
-                    {[...Array(16)].map((_, i) => (
-                      <div 
-                        key={i}
-                        className={`w-full flex-1 transition-all duration-100 ${
-                          isInActiveCall && !isMicrophoneMuted && inputLevel > i * 6.25 
-                            ? 'bg-gray-400' 
-                            : 'bg-transparent'
-                        }`}
-                      ></div>
-                    ))}
-                  </div>
-                </div>
-                <div className="text-xs font-mono w-8 text-right">
-                  {!isInActiveCall ? 'IDLE' :
-                   isMicrophoneMuted ? 'MUTED' : `${Math.round(inputLevel)}%`}
-                </div>
-              </div>
+              <AudioLevelMeter 
+                level={inputLevel}
+                label="IN"
+                isInActiveCall={isInActiveCall}
+                isMuted={isMicrophoneMuted}
+                type="input"
+              />
             </div>
           </div>
 
@@ -633,29 +616,12 @@ export default function AudioDeviceSelector({
               </select>
               
               {/* Audio Output Level Meter */}
-              <div className="flex items-center gap-1">
-                <div className="text-xs text-base-content/60">OUT</div>
-                <div className={`w-16 h-12 rounded-sm overflow-hidden flex items-end ${
-                  !isInActiveCall ? 'bg-gray-200' : 'bg-base-300'
-                }`}>
-                  {/* Segmented level meter */}
-                  <div className="w-full h-full flex flex-col-reverse gap-px">
-                    {[...Array(16)].map((_, i) => (
-                      <div 
-                        key={i}
-                        className={`w-full flex-1 transition-all duration-100 ${
-                          isInActiveCall && outputLevel > i * 6.25 
-                            ? 'bg-gray-400' 
-                            : 'bg-transparent'
-                        }`}
-                      ></div>
-                    ))}
-                  </div>
-                </div>
-                <div className="text-xs font-mono w-8 text-right">
-                  {!isInActiveCall ? 'IDLE' : `${Math.round(outputLevel)}%`}
-                </div>
-              </div>
+              <AudioLevelMeter 
+                level={outputLevel}
+                label="OUT"
+                isInActiveCall={isInActiveCall}
+                type="output"
+              />
             </div>
           </div>
         </div>
