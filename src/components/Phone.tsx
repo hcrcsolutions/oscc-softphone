@@ -57,6 +57,12 @@ export default function Phone({ theme }: PhoneProps) {
         preInitializedMedia.current = null;
         console.log('Cleaned up pre-initialized media');
       }
+      
+      // Auto-unmute when call ends
+      if (state.status === 'idle' && isMicMuted) {
+        console.log('Call ended while muted, automatically unmuting microphone');
+        setIsMicMuted(false);
+      }
       // Handle per-call timers
       if (state.status === 'connected' && state.sessionId) {
         const sessionId = state.sessionId;
@@ -562,6 +568,7 @@ export default function Phone({ theme }: PhoneProps) {
             {/* Audio Device Selector */}
             <AudioDeviceSelector 
               sipService={sipService.current}
+              isMicrophoneMuted={isMicMuted}
               onMicrophoneChange={(deviceId) => {
                 console.log('Microphone changed to:', deviceId);
               }}

@@ -40,33 +40,39 @@ export default function ActiveCallManager({
   const [isConferenceProcessing, setIsConferenceProcessing] = useState(false);
 
   const updateParticipants = useCallback(() => {
-    if (sipService) {
-      console.log('🔄 ActiveCallManager: Updating participants...');
-      console.log('🔄 ActiveCallManager: Current conference mode:', isConferenceMode);
-      console.log('🔄 ActiveCallManager: Conference room ID:', conferenceRoomId);
-      
+    if (sipService && isConferenceMode) {
+      console.log('🔄 ActiveCallManager: Updating conference participants...');
       const participantDetails = sipService.getConferenceParticipantDetails();
-      console.log('🔄 ActiveCallManager: Got participant details:', participantDetails);
-      console.log('🔄 ActiveCallManager: Setting participants in UI...');
       setParticipants(participantDetails);
+    } else {
+      // Clear participants when not in conference mode
+      if (participants.length > 0) {
+        console.log('🔄 ActiveCallManager: Clearing participants (not in conference)');
+        setParticipants([]);
+      }
     }
-  }, [sipService, isConferenceMode, conferenceRoomId]);
+  }, [sipService, isConferenceMode, conferenceRoomId, participants.length]);
 
   useEffect(() => {
-    console.log('ActiveCallManager useEffect:', { 
-      sipService: !!sipService, 
-      isConferenceMode, 
-      conferenceRoomId,
-      activeCallsCount: activeCalls.length
-    });
+    // Only log when state actually changes, not on every render
+    if (isConferenceMode) {
+      console.log('ActiveCallManager: Conference mode enabled', { 
+        conferenceRoomId,
+        activeCallsCount: activeCalls.length
+      });
+    }
     
     if (sipService && isConferenceMode) {
       updateParticipants();
       // Update participants every 2 seconds while in conference
       const interval = setInterval(updateParticipants, 2000);
-      return () => clearInterval(interval);
+      return () => {
+        console.log('🔄 ActiveCallManager: Stopping conference participant polling');
+        clearInterval(interval);
+      };
     } else {
-      setParticipants([]);
+      // Clear participants when not in conference
+      updateParticipants();
     }
   }, [sipService, isConferenceMode, conferenceRoomId, activeCalls, updateParticipants]);
 
@@ -148,17 +154,8 @@ export default function ActiveCallManager({
     }
   };
 
-  console.log('🎯 ActiveCallManager render check:', {
-    isConferenceMode,
-    participantsCount: participants.length,
-    activeCallsCount: activeCalls.length,
-    participants: participants.map(p => ({ sessionId: p.sessionId, remoteNumber: p.remoteNumber })),
-    activeCalls: activeCalls.map(c => ({ sessionId: c.sessionId, remoteNumber: c.remoteNumber, status: c.status }))
-  });
-  
   // Show nothing if no active calls and not in conference mode
   if (!isConferenceMode && activeCalls.length === 0) {
-    console.log('🚫 ActiveCallManager: Not rendering - no active calls and not in conference');
     return null;
   }
 
