@@ -2538,8 +2538,11 @@ export class SipService {
   }
 
   /**
-   * Allocate a conference room for use by sending INVITE to FreeSWITCH
+   * Allocate a conference room for use
    * Returns the allocated room ID or null if unable to allocate
+   * 
+   * Note: FreeSWITCH creates conference rooms dynamically when first accessed,
+   * so we don't need to pre-reserve them with a control session
    */
   async allocateConferenceRoom(roomId?: string): Promise<string | null> {
     try {
@@ -2551,52 +2554,12 @@ export class SipService {
         return null;
       }
       
-      // Send INVITE to FreeSWITCH to reserve the conference room
-      if (this.userAgent && this.registerer?.state === 'Registered') {
-        try {
-          // Create an inviter to establish a control session with the conference room
-          const inviter = new Inviter(this.userAgent, new URI('sip', room, this.config?.server || 'localhost'), {
-            sessionDescriptionHandlerOptions: {
-              constraints: { audio: false, video: false }, // No media for control session
-            },
-            extraHeaders: [
-              'X-Conference-Control: allocate',
-              'X-Conference-Room: ' + room
-            ]
-          });
-          
-          // Send the INVITE
-          await inviter.invite();
-          
-          // Store the control session
-          const controlSessionId = `control_${room}`;
-          this.sessions.set(controlSessionId, inviter);
-          
-          console.log(`📞 Sent INVITE to reserve conference room ${room} on FreeSWITCH`);
-          
-          // Handle session state
-          inviter.stateChange.addListener((state: SessionState) => {
-            if (state === SessionState.Established) {
-              console.log(`✅ Conference room ${room} successfully reserved on FreeSWITCH`);
-              // Immediately put the control session on hold or terminate after reservation
-              setTimeout(() => {
-                inviter.bye();
-              }, 1000);
-            } else if (state === SessionState.Terminated) {
-              console.log(`Control session for room ${room} terminated`);
-              this.sessions.delete(controlSessionId);
-            }
-          });
-          
-        } catch (sipError) {
-          console.error(`Failed to send INVITE to reserve room ${room}:`, sipError);
-          // Continue with local allocation even if SIP fails
-        }
-      }
-      
-      // Mark as allocated locally
+      // Simply mark as allocated locally
+      // FreeSWITCH will create the conference room dynamically when we join it
       SipService.allocatedRooms.add(room);
-      console.log(`✅ Allocated conference room locally: ${room}`);
+      console.log(`✅ Allocated conference room: ${room}`);
+      console.log(`  - Room will be created on FreeSWITCH when first participant joins`);
+      
       return room;
     } catch (error) {
       console.error('Failed to allocate conference room:', error);
@@ -2605,64 +2568,17 @@ export class SipService {
   }
 
   /**
-   * Release a conference room back to the pool by sending BYE or INFO to FreeSWITCH
+   * Release a conference room back to the pool
+   * 
+   * Note: FreeSWITCH will automatically clean up empty conference rooms,
+   * so we only need to track this locally
    */
   async releaseConferenceRoom(roomId: string): Promise<boolean> {
     if (SipService.allocatedRooms.has(roomId)) {
-      // Send SIP message to FreeSWITCH to release the conference room
-      if (this.userAgent && this.registerer?.state === 'Registered') {
-        try {
-          // Check if we have a control session for this room
-          const controlSessionId = `control_${roomId}`;
-          const controlSession = this.sessions.get(controlSessionId);
-          
-          if (controlSession && typeof controlSession.bye === 'function') {
-            // Send BYE to terminate the control session
-            await controlSession.bye();
-            console.log(`📞 Sent BYE to release conference room ${roomId} on FreeSWITCH`);
-          } else {
-            // Alternative: Send OPTIONS or INFO to notify FreeSWITCH about room release
-            if (this.userAgent.userAgentCore) {
-              const target = new URI('sip', roomId, this.config?.server || 'localhost');
-              
-              // Create body object with FreeSWITCH conference control format
-              const bodyContent = {
-                content: 'action=release',
-                contentType: 'application/conference-info+xml',
-                contentDisposition: 'render'
-              };
-              
-              const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
-                'INFO',
-                target,
-                this.userAgent.userAgentCore.configuration.aor,
-                target,
-                {},
-                [
-                  'X-Conference-Control: release', 
-                  `X-Conference-Room: ${roomId}`
-                ],
-                bodyContent
-              );
-              
-              // Send the INFO request
-              this.userAgent.userAgentCore.request(request);
-              console.log(`📞 Sent INFO to release conference room ${roomId} on FreeSWITCH`);
-            }
-          }
-          
-          // Clean up control session
-          this.sessions.delete(controlSessionId);
-          
-        } catch (sipError) {
-          console.error(`Failed to send SIP message to release room ${roomId}:`, sipError);
-          // Continue with local release even if SIP fails
-        }
-      }
-      
       // Remove from local allocation
       SipService.allocatedRooms.delete(roomId);
-      console.log(`✅ Released conference room locally: ${roomId}`);
+      console.log(`✅ Released conference room: ${roomId}`);
+      console.log(`  - FreeSWITCH will clean up the room when empty`);
       return true;
     }
     return false;
