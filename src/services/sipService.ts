@@ -2634,8 +2634,6 @@ export class SipService {
       return;
     }
     
-    const conferenceUri = `sip:${this.conferenceRoomId}@${this.config.server}`;
-    
     try {
       // Send REFER to transfer the call to conference (Phase 4 from conference.md)
       console.log(`📞 Sending REFER to transfer ${sessionId} to conference room ${this.conferenceRoomId}`);
