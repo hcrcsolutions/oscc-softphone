@@ -2319,8 +2319,7 @@ export class SipService {
           extraHeaders: [
             'X-Conference-Control: mute',
             `X-Conference-Room: ${this.conferenceRoomId}`,
-            `X-Conference-Member: ${sessionId}`,
-            'Content-Type: application/conference-info+xml'
+            `X-Conference-Member: ${sessionId}`
           ],
           body: bodyContent
         });
@@ -2368,8 +2367,7 @@ export class SipService {
           extraHeaders: [
             'X-Conference-Control: unmute',
             `X-Conference-Room: ${this.conferenceRoomId}`,
-            `X-Conference-Member: ${sessionId}`,
-            'Content-Type: application/conference-info+xml'
+            `X-Conference-Member: ${sessionId}`
           ],
           body: bodyContent
         });
@@ -2485,12 +2483,12 @@ export class SipService {
       isOnHold: boolean;
     }> = [];
 
-    console.log('🔍 Getting conference participants:', {
-      conferenceParticipants: Array.from(this.conferenceParticipants),
-      conferenceParticipantInfos: Array.from(this.conferenceParticipantInfos.keys()),
-      isConferenceMode: this.isConferenceMode,
-      conferenceRoomId: this.conferenceRoomId
-    });
+    // console.log('🔍 Getting conference participants:', {
+    //   conferenceParticipants: Array.from(this.conferenceParticipants),
+    //   conferenceParticipantInfos: Array.from(this.conferenceParticipantInfos.keys()),
+    //   isConferenceMode: this.isConferenceMode,
+    //   conferenceRoomId: this.conferenceRoomId
+    // });
 
     // In conference mode, show the ORIGINAL participants (B and C) from conferenceParticipantInfos
     // These are the real participants, regardless of session state
@@ -2509,11 +2507,11 @@ export class SipService {
           isMuted: false, // TODO: Track mute state
           isOnHold: callInfo.isOnHold
         });
-        console.log(`📋 Conference participant: ${callInfo.remoteNumber} (${sessionId})`);
+        // console.log(`📋 Conference participant: ${callInfo.remoteNumber} (${sessionId})`);
       }
     }
 
-    console.log(`📊 Conference participants for UI (${participants.length}):`, participants.map(p => p.remoteNumber));
+    // console.log(`📊 Conference participants for UI (${participants.length}):`, participants.map(p => p.remoteNumber));
     return participants;
   }
 
@@ -2556,8 +2554,6 @@ export class SipService {
       // Send INVITE to FreeSWITCH to reserve the conference room
       if (this.userAgent && this.registerer?.state === 'Registered') {
         try {
-          const conferenceUri = `sip:${room}@${this.config?.server || 'localhost'}`;
-          
           // Create an inviter to establish a control session with the conference room
           const inviter = new Inviter(this.userAgent, new URI('sip', room, this.config?.server || 'localhost'), {
             sessionDescriptionHandlerOptions: {
@@ -2565,9 +2561,7 @@ export class SipService {
             },
             extraHeaders: [
               'X-Conference-Control: allocate',
-              'X-Conference-Room: ' + room,
-              'Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO',
-              'Content-Type: application/sdp'
+              'X-Conference-Room: ' + room
             ]
           });
           
@@ -2646,8 +2640,7 @@ export class SipService {
                 {},
                 [
                   'X-Conference-Control: release', 
-                  `X-Conference-Room: ${roomId}`,
-                  'Content-Type: application/conference-info+xml'
+                  `X-Conference-Room: ${roomId}`
                 ],
                 bodyContent
               );
@@ -2731,19 +2724,69 @@ export class SipService {
       // Send REFER to transfer the call to conference (Phase 4 from conference.md)
       console.log(`📞 Sending REFER to transfer ${sessionId} to conference room ${this.conferenceRoomId}`);
       
+      const referToUri = new URI('sip', this.conferenceRoomId, this.config.server);
+      const callInfo = this.callInfos.get(sessionId);
+      
+      // Log outgoing REFER message details
+      console.log('');
+      console.log('📤 OUTGOING SIP REFER MESSAGE:');
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log(`REFER sip:${callInfo?.remoteNumber || 'unknown'}@${this.config.server} SIP/2.0`);
+      console.log(`Via: SIP/2.0/WS [transport];branch=[auto-generated]`);
+      console.log(`From: <sip:${this.config.username}@${this.config.server}>;tag=[session-tag]`);
+      console.log(`To: <sip:${callInfo?.remoteNumber || 'unknown'}@${this.config.server}>;tag=[remote-tag]`);
+      console.log(`Call-ID: [session-call-id]`);
+      console.log(`CSeq: [sequence] REFER`);
+      console.log(`Max-Forwards: 70`);
+      console.log(`Refer-To: <${referToUri.toString()}>`);
+      console.log(`Referred-By: <sip:${this.config.username}@${this.config.server}>`);
+      console.log(`Contact: <sip:[contact]@[transport];transport=ws>`);
+      console.log(`Content-Length: 0`);
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log(`Target: Transfer ${callInfo?.remoteNumber} → Conference Room ${this.conferenceRoomId}`);
+      console.log('');
+      
+      debugger;
       if (typeof session.refer === 'function') {
         // Use session's refer method if available
-        await session.refer(new URI('sip', this.conferenceRoomId, this.config.server), {
+        await session.refer(referToUri, {
           requestDelegate: {
             onAccept: () => {
-              console.log(`✅ REFER accepted for session ${sessionId}`);
+              console.log('');
+              console.log('📥 REFER RESPONSE RECEIVED:');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log('SIP/2.0 202 Accepted');
+              console.log(`From: <sip:${this.config?.username}@${this.config?.server}>`);
+              console.log(`To: <sip:${callInfo?.remoteNumber || 'unknown'}@${this.config?.server}>`);
+              console.log('Content-Length: 0');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log(`✅ REFER accepted for session ${sessionId} - ${callInfo?.remoteNumber} will now connect to conference`);
+              console.log('');
             },
             onReject: (response: any) => {
+              console.log('');
+              console.log('📥 REFER REJECTION RECEIVED:');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log(`SIP/2.0 ${response.statusCode || '4xx'} ${response.reasonPhrase || 'Rejected'}`);
+              console.log('════════════════════════════════════════════════════════════════');
               console.error(`❌ REFER rejected for session ${sessionId}:`, response);
+              console.log('');
             },
             onNotify: (notification: any) => {
+              console.log('');
+              console.log('📥 REFER NOTIFY MESSAGE RECEIVED:');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log('NOTIFY [uri] SIP/2.0');
+              console.log('Event: refer');
+              console.log('Subscription-State: [state]');
+              console.log('Content-Type: message/sipfrag');
+              console.log('Content-Length: [length]');
+              console.log('');
+              console.log('Body: SIP/2.0 [status from transferred party]');
+              console.log('════════════════════════════════════════════════════════════════');
               console.log(`📨 REFER NOTIFY for session ${sessionId}:`, notification);
               this.handleReferNotify(sessionId, notification);
+              console.log('');
             }
           }
         });
@@ -2757,13 +2800,25 @@ export class SipService {
           ],
           requestDelegate: {
             onAccept: () => {
+              console.log('');
+              console.log('📥 MANUAL REFER ACCEPTED:');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log('SIP/2.0 202 Accepted');
+              console.log('════════════════════════════════════════════════════════════════');
               console.log(`✅ Conference REFER accepted for session: ${sessionId}`);
+              console.log('');
             },
             onReject: (response: any) => {
+              console.log('');
+              console.log('📥 MANUAL REFER REJECTED:');
+              console.log('════════════════════════════════════════════════════════════════');
+              console.log(`SIP/2.0 ${response.statusCode || '4xx'} ${response.reasonPhrase || 'Rejected'}`);
+              console.log('════════════════════════════════════════════════════════════════');
               console.error(`❌ Conference REFER rejected for session: ${sessionId}`, response);
+              console.log('');
             },
             onNotify: (notification: any) => {
-              console.log(`📨 Manual REFER NOTIFY for session ${sessionId}:`, notification);
+              console.log('📨 Manual REFER NOTIFY for session', sessionId);
               this.handleReferNotify(sessionId, notification);
             }
           }
@@ -2944,6 +2999,12 @@ export class SipService {
         extraHeaders.push('X-Conference-Role: moderator');
       }
       
+      // Subscribe to conference events BEFORE joining the conference
+      // This ensures we don't miss any events during the join process
+      this.conferenceRoomId = roomId; // Set this early so subscription knows the room
+      console.log('🔔 Pre-subscribing to conference events before joining...');
+      this.subscribeToConferenceEvents();
+      
       // Create new INVITE to conference room
       const target = new URI('sip', roomId, this.config.server);
       const inviter = new Inviter(this.userAgent, target, {
@@ -2987,11 +3048,11 @@ export class SipService {
           
           console.log(`✅ Conference room session created, preserving ${this.conferenceParticipantInfos.size} original participants in UI`);
           
-          // Subscribe to conference events now that we're established in the conference
-          // The ACK has been sent and we're officially part of the conference
+          // Conference events subscription already done before joining
+          // Just log that we're now fully established in the conference
           if (this.conferenceRoomId) {
-            console.log(`🔔 Subscribing to conference events for room ${this.conferenceRoomId} after session established`);
-            this.subscribeToConferenceEvents();
+            console.log(`✅ Conference room ${this.conferenceRoomId} session fully established`);
+            console.log('  - Conference events subscription should already be active');
           }
           
           // Force UI update to show conference controls immediately
@@ -3064,41 +3125,6 @@ export class SipService {
     }
   }
 
-
-  // Alternative method using attended transfer for conference
-  async createAttendedConference(sessionId1: string, sessionId2: string): Promise<void> {
-    const session1 = this.sessions.get(sessionId1);
-    const session2 = this.sessions.get(sessionId2);
-    if (!session1 || !session2) {
-      throw new Error('One or both sessions not found for attended conference');
-    }
-
-    try {
-      console.log(`Creating attended conference between ${sessionId1} and ${sessionId2}`);
-      // Generate conference room ID
-      this.conferenceRoomId = `conf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      const conferenceUri = `sip:${this.conferenceRoomId}@${this.config?.server}`;
-      // Hold both calls first
-      await Promise.all([
-        this.holdCallBySessionId(sessionId1),
-        this.holdCallBySessionId(sessionId2)
-      ]);
-      // Transfer both to conference
-      await Promise.all([
-        this.transferCallToConference(sessionId1),
-        this.transferCallToConference(sessionId2)
-      ]);
-      // Enable conference mode
-      this.isConferenceMode = true;
-      this.conferenceParticipants.add(sessionId1);
-      this.conferenceParticipants.add(sessionId2);
-      console.log(`Attended conference created: ${this.conferenceRoomId}`);
-      this.updateCallState();
-    } catch (error) {
-      console.error('Failed to create attended conference:', error);
-      throw error;
-    }
-  }
 
   getActiveCalls(): CallInfo[] {
     return this.getCallInfosArray().filter(call => !call.isOnHold);
@@ -3509,6 +3535,7 @@ export class SipService {
       this.conferenceSubscriber = new Subscriber(this.userAgent, target, eventPackage);
       
       // Set up subscription event handlers
+      debugger;
       this.conferenceSubscriber.stateChange.addListener((newState: SubscriptionState) => {
         console.log(`📺 CONFERENCE SUBSCRIPTION STATE CHANGED:`);
         console.log(`  - New State: ${newState}`);
@@ -3540,6 +3567,7 @@ export class SipService {
       console.log('📺 Setting up NOTIFY handler...');
       this.conferenceSubscriber.delegate = {
         onNotify: (notification) => {
+          debugger
           console.log('📥 INCOMING SIP NOTIFY MESSAGE:');
           console.log('  ═══════════════════════════════════════');
           console.log('  - Method: NOTIFY');
@@ -3780,9 +3808,7 @@ export class SipService {
             this.userAgent.userAgentCore.configuration.aor,
             target,
             {},
-            [
-              'Content-Type: application/conference-info+xml'
-            ],
+            [],
             {
               content: `<?xml version="1.0" encoding="UTF-8"?>
 <conference-info>
@@ -3884,9 +3910,7 @@ export class SipService {
             this.userAgent.userAgentCore.configuration.aor,
             target,
             {},
-            [
-              'Content-Type: application/conference-command'
-            ],
+            [],
             {
               content: 'destroy',
               contentType: 'application/conference-command',
@@ -3926,9 +3950,7 @@ export class SipService {
           this.userAgent.userAgentCore.configuration.aor,
           target,
           {},
-          [
-            'Content-Type: application/x-fs-api-command'
-          ],
+          [],
           {
             content: `conference ${this.conferenceRoomId} kick ${participantNumber}`,
             contentType: 'application/x-fs-api-command',
@@ -3971,8 +3993,7 @@ export class SipService {
           {},
           [
             'X-Conference-Action: destroy',
-            `X-Conference-Room: ${roomId}`,
-            'Content-Type: application/conference-control+xml'
+            `X-Conference-Room: ${roomId}`
           ],
           {
             content: `<conference-control><action>destroy</action><room>${roomId}</room></conference-control>`,
