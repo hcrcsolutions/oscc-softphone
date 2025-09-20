@@ -96,6 +96,11 @@ export class SipService {
   private pendingReferTransfers: Set<string> = new Set(); // Track pending REFER transfers
   private successfulTransfers: Set<string> = new Set(); // Track completed REFER transfers
   private isMicrophoneMuted: boolean = false; // Track microphone mute state
+  private reconnectTimer?: NodeJS.Timeout; // Timer for reconnection attempts
+  private reconnectAttempts: number = 0; // Current reconnection attempt count
+  private maxReconnectAttempts: number = 100; // Maximum reconnection attempts
+  private reconnectDelay: number = 5000; // Initial delay between reconnection attempts (5 seconds)
+  private isReconnecting: boolean = false; // Flag to track if we're reconnecting
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -649,6 +654,10 @@ export class SipService {
 
       // Enable SIP message tracing after UserAgent is started
       await this.userAgent.start();
+      
+      // Monitor WebSocket connection state
+      this.setupTransportMonitoring();
+      
       // Add SIP message tracing
       if (this.userAgent.transport) {
         const transport = this.userAgent.transport;
@@ -3926,6 +3935,9 @@ export class SipService {
   }
 
   async disconnect(): Promise<void> {
+    // Stop any reconnection attempts
+    this.stopReconnection();
+    
     try {
       const activeSession = this.getActiveSession();
       if (activeSession) {
@@ -3955,6 +3967,9 @@ export class SipService {
       this.sessions.clear();
       this.callInfos.clear();
       this.activeSessionId = undefined;
+      // Clear reconnection state
+      this.isReconnecting = false;
+      this.reconnectAttempts = 0;
     }
   }
 
@@ -3987,4 +4002,304 @@ export class SipService {
         return { status: 'idle' };
     }
   }
+
+  // Monitor WebSocket transport for disconnections
+  private setupTransportMonitoring(): void {
+    if (!this.userAgent?.transport) {
+      console.warn('No transport available to monitor');
+      return;
+    }
+
+    const transport = this.userAgent.transport;
+    console.log('🔌 Setting up WebSocket transport monitoring with auto-reconnect...');
+
+    // Monitor transport state changes
+    transport.stateChange.addListener((state: any) => {
+      console.log(`🔌 WebSocket transport state changed: ${state}`);
+      
+      switch (state) {
+        case 'Disconnected':
+        case 'Disconnecting':
+          console.error('⚠️ WebSocket connection lost to FreeSWITCH!');
+          this.handleTransportDisconnect();
+          // Start reconnection attempts
+          this.startReconnection();
+          break;
+          
+        case 'Connected':
+          console.log('✅ WebSocket connection established to FreeSWITCH');
+          // Reset reconnection state when connected
+          this.stopReconnection();
+          this.reconnectAttempts = 0;
+          this.isReconnecting = false;
+          
+          // Re-register with FreeSWITCH
+          this.reRegister();
+          break;
+          
+        case 'Connecting':
+          console.log('🔄 WebSocket connecting to FreeSWITCH...');
+          break;
+      }
+    });
+
+    // Also monitor the underlying WebSocket if accessible
+    const ws = (transport as any).ws || (transport as any).socket;
+    if (ws) {
+      console.log('🔌 Monitoring underlying WebSocket directly');
+      
+      ws.addEventListener('close', (event: any) => {
+        console.error('🔴 WebSocket closed:', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean
+        });
+        this.handleTransportDisconnect();
+      });
+
+      ws.addEventListener('error', (event: any) => {
+        console.error('🔴 WebSocket error:', event);
+        // Error often precedes close, so we'll handle cleanup in close event
+      });
+    }
+  }
+
+  // Handle WebSocket transport disconnection
+  private handleTransportDisconnect(): void {
+    console.log('🔴 Handling WebSocket disconnection - cleaning up all calls and conferences');
+    
+    // Prevent multiple cleanup calls
+    if (!(this.userAgent?.transport)) {
+      return;
+    }
+    
+    // 1. Clean up conference state
+    if (this.isConferenceMode) {
+      console.log('🔚 Cleaning up conference due to connection loss');
+      
+      // Conference polling was removed - using RFC 4575 events instead
+      
+      // Clean up conference subscription
+      if (this.conferenceSubscriber) {
+        try {
+          this.conferenceSubscriber.dispose();
+        } catch (e) {
+          console.error('Error disposing conference subscription:', e);
+        }
+        this.conferenceSubscriber = undefined;
+      }
+      
+      // Clear conference state
+      this.isConferenceMode = false;
+      this.conferenceParticipants.clear();
+      this.conferenceParticipantInfos.clear();
+      this.conferenceState.clear();
+      this.conferenceRoomId = undefined;
+      
+      // Release allocated rooms
+      SipService.allocatedRooms.clear();
+    }
+    
+    // 2. Terminate all active sessions
+    const sessionIds = Array.from(this.sessions.keys());
+    console.log(`🔴 Terminating ${sessionIds.length} active session(s)`);
+    
+    for (const sessionId of sessionIds) {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        try {
+          // Mark session as terminated without trying to send BYE
+          console.log(`🔴 Marking session ${sessionId} as terminated`);
+          
+          // Clean up the session
+          this.sessions.delete(sessionId);
+          
+          // Update call info to show disconnected
+          const callInfo = this.callInfos.get(sessionId);
+          if (callInfo) {
+            callInfo.status = 'connected' as any; // Will be changed to disconnected
+            this.callInfos.delete(sessionId);
+          }
+          
+          // Clean up audio
+          this.cleanupAudioForSession(sessionId);
+        } catch (error) {
+          console.error(`Error cleaning up session ${sessionId}:`, error);
+        }
+      }
+    }
+    
+    // 3. Clear all call tracking
+    this.sessions.clear();
+    this.callInfos.clear();
+    this.activeSessionId = undefined;
+    this.pendingReferTransfers.clear();
+    this.successfulTransfers.clear();
+    
+    // 4. Stop all audio
+    this.stopRingbackTone();
+    this.stopRingtone();
+    this.cleanupAllAudioStreams();
+    
+    // 5. Update UI to show disconnected state
+    this.updateCallState();
+    
+    // 6. Update registration state
+    if (this.onRegistrationStateChanged) {
+      this.onRegistrationStateChanged(false);
+    }
+    
+    // 7. Emit disconnection event
+    this.emitEvent('transportDisconnected', {
+      reason: 'WebSocket connection lost to FreeSWITCH',
+      timestamp: new Date()
+    });
+    
+    console.log('✅ Cleanup complete - all calls terminated due to connection loss');
+  }
+
+  // Re-register with FreeSWITCH after reconnection
+  private async reRegister(): Promise<void> {
+    console.log('📝 Re-registering with FreeSWITCH...');
+    
+    try {
+      // Check if we have a registerer
+      if (!this.registerer) {
+        // If no registerer exists, create a new one
+        if (this.userAgent) {
+          console.log('📝 Creating new registerer...');
+          this.registerer = new Registerer(this.userAgent);
+          
+          // Re-attach state change listener
+          this.registerer.stateChange.addListener((state) => {
+            const isRegistered = state === 'Registered';
+            this.onRegistrationStateChanged?.(isRegistered);
+            console.log('Registration state:', state);
+            
+            if (isRegistered) {
+              console.log('✅ Re-registration successful - Ready to make/receive calls');
+            }
+          });
+        } else {
+          console.error('Cannot create registerer - no UserAgent available');
+          return;
+        }
+      }
+      
+      // Check current registration state
+      const currentState = this.registerer.state;
+      console.log(`📝 Current registration state: ${currentState}`);
+      
+      // Force re-registration regardless of current state
+      if (currentState === 'Registered') {
+        // If already registered, unregister first then re-register
+        console.log('📝 Already registered, unregistering first...');
+        await this.registerer.unregister();
+        // Small delay to ensure unregistration completes
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      // Now register
+      console.log('📝 Sending REGISTER request...');
+      await this.registerer.register();
+      
+    } catch (error) {
+      console.error('❌ Re-registration failed:', error);
+      // Schedule another attempt
+      setTimeout(() => {
+        this.reRegister();
+      }, 5000);
+    }
+  }
+
+  // Start reconnection attempts
+  private startReconnection(): void {
+    // Don't start if already reconnecting or if we don't have config
+    if (this.isReconnecting || !this.config) {
+      return;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts = 0;
+
+    console.log('🔄 Starting automatic reconnection attempts...');
+    
+    // Clear any existing timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    // Start reconnection loop
+    this.attemptReconnection();
+  }
+
+  // Stop reconnection attempts
+  private stopReconnection(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.isReconnecting = false;
+    console.log('🛑 Stopped reconnection attempts');
+  }
+
+  // Attempt to reconnect to FreeSWITCH
+  private async attemptReconnection(): Promise<void> {
+    if (!this.isReconnecting || !this.config) {
+      return;
+    }
+
+    this.reconnectAttempts++;
+    
+    // Check if we've exceeded max attempts
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      console.error('❌ Maximum reconnection attempts exceeded. Giving up.');
+      this.stopReconnection();
+      return;
+    }
+
+    console.log(`🔄 Reconnection attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
+
+    try {
+      // Check if transport exists and can be reconnected
+      if (this.userAgent?.transport) {
+        // Try to reconnect the transport
+        const transport = this.userAgent.transport;
+        
+        // SIP.js transport should automatically try to reconnect
+        // We just need to ensure the UserAgent is started
+        if (this.userAgent.state === 'Stopped') {
+          console.log('🔄 Restarting UserAgent...');
+          await this.userAgent.start();
+        }
+
+        // Force transport reconnection if method exists
+        if (typeof (transport as any).connect === 'function') {
+          console.log('🔄 Forcing transport reconnection...');
+          await (transport as any).connect();
+        }
+      } else {
+        // If no transport, try to recreate the entire connection
+        console.log('🔄 No transport available, attempting full reconnection...');
+        await this.connect();
+      }
+
+      // If we get here without error, the connection attempt was initiated
+      // The transport state change listener will handle the result
+      
+    } catch (error) {
+      console.error(`❌ Reconnection attempt ${this.reconnectAttempts} failed:`, error);
+      
+      // Calculate exponential backoff delay (max 30 seconds)
+      const delay = Math.min(this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1), 30000);
+      
+      console.log(`⏰ Next reconnection attempt in ${Math.round(delay / 1000)} seconds...`);
+      
+      // Schedule next attempt
+      this.reconnectTimer = setTimeout(() => {
+        this.attemptReconnection();
+      }, delay);
+    }
+  }
+
 }

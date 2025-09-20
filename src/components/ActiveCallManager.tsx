@@ -41,7 +41,7 @@ export default function ActiveCallManager({
 
   const updateParticipants = useCallback(() => {
     if (sipService && isConferenceMode) {
-      console.log('🔄 ActiveCallManager: Updating conference participants...');
+      // console.log('🔄 ActiveCallManager: Updating conference participants...');
       const participantDetails = sipService.getConferenceParticipantDetails();
       setParticipants(participantDetails);
     } else {
