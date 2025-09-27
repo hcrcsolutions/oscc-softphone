@@ -316,37 +316,73 @@ export default function Phone({ theme }: PhoneProps) {
     setPhoneNumber('');
   };
 
-  const setPresenceAway = async () => {
+  const handlePresenceChange = async (newStatus: 'available' | 'away' | 'unavailable', event?: React.MouseEvent) => {
+    // Close dropdown if event is provided
+    if (event) {
+      const dropdown = event.currentTarget.closest('.dropdown') as HTMLElement;
+      dropdown?.removeAttribute('open');
+      (document.activeElement as HTMLElement)?.blur();
+    }
+    
     try {
-      console.log('Setting presence to Away...');
-      const success = await sipService.current.setPresenceAway();
+      console.log(`Setting presence to ${newStatus}...`);
+      let success = false;
+      
+      switch (newStatus) {
+        case 'available':
+          success = await sipService.current.setPresenceOnline();
+          break;
+        case 'away':
+          success = await sipService.current.setPresenceAway();
+          break;
+        case 'unavailable':
+          success = await sipService.current.setPresenceUnavailable();
+          break;
+      }
+      
       if (success) {
-        console.log('✅ Presence set to Away - calls will go to voicemail');
+        console.log(`✅ Presence set to ${newStatus}`);
       } else {
-        setErrorMessage('Failed to set presence to Away');
+        setErrorMessage(`Failed to set presence to ${newStatus}`);
         setShowErrorAlert(true);
       }
     } catch (error) {
-      console.error('Failed to set presence to Away:', error);
+      console.error(`Failed to set presence to ${newStatus}:`, error);
       setErrorMessage('Failed to set presence status');
       setShowErrorAlert(true);
     }
   };
 
-  const setPresenceOnline = async () => {
-    try {
-      console.log('Setting presence to Online...');
-      const success = await sipService.current.setPresenceOnline();
-      if (success) {
-        console.log('✅ Presence set to Online - ready to receive calls');
-      } else {
-        setErrorMessage('Failed to set presence to Online');
-        setShowErrorAlert(true);
-      }
-    } catch (error) {
-      console.error('Failed to set presence to Online:', error);
-      setErrorMessage('Failed to set presence status');
-      setShowErrorAlert(true);
+  const getPresenceDisplayInfo = (status: 'available' | 'away' | 'unavailable') => {
+    switch (status) {
+      case 'available':
+        return {
+          label: 'Available',
+          description: 'Ready to receive calls',
+          bubbleClass: 'bg-success',
+          animate: true
+        };
+      case 'away':
+        return {
+          label: 'Away',
+          description: 'Calls go to voicemail',
+          bubbleClass: 'bg-warning',
+          animate: false
+        };
+      case 'unavailable':
+        return {
+          label: 'Unavailable',
+          description: 'Do not disturb',
+          bubbleClass: 'bg-error',
+          animate: false
+        };
+      default:
+        return {
+          label: 'Unknown',
+          description: '',
+          bubbleClass: 'bg-base-300',
+          animate: false
+        };
     }
   };
 
@@ -605,23 +641,62 @@ export default function Phone({ theme }: PhoneProps) {
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>
           <div className="flex gap-2 items-center">
-            {/* Presence control buttons - only show when registered and not in a call */}
+            {/* Presence control dropdown - only show when registered and not in a call */}
             {isRegistered && callState.status === 'idle' && (
-              <div className="btn-group">
-                <button 
-                  className={`btn btn-sm ${callState.presenceStatus === 'available' ? 'btn-success' : 'btn-ghost'}`}
-                  onClick={setPresenceOnline}
-                  title="Set presence to Online - ready to receive calls"
-                >
-                  Online
-                </button>
-                <button 
-                  className={`btn btn-sm ${callState.presenceStatus === 'away' ? 'btn-warning' : 'btn-ghost'}`}
-                  onClick={setPresenceAway}
-                  title="Set presence to Away - calls go to voicemail"
-                >
-                  Away
-                </button>
+              <div className="dropdown dropdown-end">
+                <div tabIndex={0} role="button" className="btn btn-sm btn-ghost">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 ${getPresenceDisplayInfo(callState.presenceStatus || 'available').bubbleClass} rounded-full ${getPresenceDisplayInfo(callState.presenceStatus || 'available').animate ? 'animate-pulse' : ''}`}></div>
+                    <span>{getPresenceDisplayInfo(callState.presenceStatus || 'available').label}</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </div>
+                <ul tabIndex={0} className="dropdown-content menu bg-base-100 rounded-box z-[1] w-56 p-2 shadow border border-base-300">
+                  <li>
+                    <button 
+                      onClick={(e) => handlePresenceChange('available', e)}
+                      className={`${callState.presenceStatus === 'available' ? 'active' : ''}`}
+                    >
+                      <div className="flex items-center gap-3 w-full">
+                        <div className="w-2 h-2 bg-success rounded-full animate-pulse flex-shrink-0"></div>
+                        <div className="flex-1 text-left">
+                          <div className="font-medium">Available</div>
+                          <div className="text-xs opacity-60 whitespace-nowrap">Ready to receive calls</div>
+                        </div>
+                      </div>
+                    </button>
+                  </li>
+                  <li>
+                    <button 
+                      onClick={(e) => handlePresenceChange('away', e)}
+                      className={`${callState.presenceStatus === 'away' ? 'active' : ''}`}
+                    >
+                      <div className="flex items-center gap-3 w-full">
+                        <div className="w-2 h-2 bg-warning rounded-full flex-shrink-0"></div>
+                        <div className="flex-1 text-left">
+                          <div className="font-medium">Away</div>
+                          <div className="text-xs opacity-60 whitespace-nowrap">Calls go to voicemail</div>
+                        </div>
+                      </div>
+                    </button>
+                  </li>
+                  <li>
+                    <button 
+                      onClick={(e) => handlePresenceChange('unavailable', e)}
+                      className={`${callState.presenceStatus === 'unavailable' ? 'active' : ''}`}
+                    >
+                      <div className="flex items-center gap-3 w-full">
+                        <div className="w-2 h-2 bg-error rounded-full flex-shrink-0"></div>
+                        <div className="flex-1 text-left">
+                          <div className="font-medium">Unavailable</div>
+                          <div className="text-xs opacity-60 whitespace-nowrap">Do not disturb</div>
+                        </div>
+                      </div>
+                    </button>
+                  </li>
+                </ul>
               </div>
             )}
             <div className={`badge ${getStatusColor()}`}>

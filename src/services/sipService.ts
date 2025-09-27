@@ -170,13 +170,15 @@ export class SipService {
           status: 'connected', // Keep as connected to show conference controls
           activeCalls: [],
           isConferenceMode: this.isConferenceMode,
-          conferenceRoomId: this.conferenceRoomId
+          conferenceRoomId: this.conferenceRoomId,
+          presenceStatus: this.currentPresenceStatus
         });
       } else {
         // Conference controls about to be hidden - going to idle
         this.onCallStateChanged?.({
           status: 'idle',
-          activeCalls: []
+          activeCalls: [],
+          presenceStatus: this.currentPresenceStatus
         });
       }
       return;
@@ -192,7 +194,8 @@ export class SipService {
         status: 'connected',
         activeCalls: activeCalls,
         isConferenceMode: this.isConferenceMode,
-        conferenceRoomId: this.conferenceRoomId
+        conferenceRoomId: this.conferenceRoomId,
+        presenceStatus: this.currentPresenceStatus
       });
       return;
     }
@@ -208,7 +211,8 @@ export class SipService {
           status: 'connected',
           activeCalls: activeCalls,
           isConferenceMode: this.isConferenceMode,
-          conferenceRoomId: this.conferenceRoomId
+          conferenceRoomId: this.conferenceRoomId,
+          presenceStatus: this.currentPresenceStatus
         });
       }
       return;
@@ -244,7 +248,8 @@ export class SipService {
       direction: callInfo.direction,
       isOnHold: callInfo.isOnHold,
       sessionId: targetSessionId,
-      activeCalls
+      activeCalls,
+      presenceStatus: this.currentPresenceStatus
     });
   }
 
@@ -598,7 +603,8 @@ export class SipService {
       this.onCallStateChanged?.({
         status: 'failed',
         errorMessage: 'Phone system not configured. Please check your settings.',
-        errorCode: 'CONFIG_MISSING'
+        errorCode: 'CONFIG_MISSING',
+        presenceStatus: this.currentPresenceStatus
       });
       throw error;
     }
@@ -705,7 +711,8 @@ export class SipService {
       this.onCallStateChanged?.({
         status: 'failed',
         errorMessage,
-        errorCode
+        errorCode,
+        presenceStatus: this.currentPresenceStatus
       });
       throw error;
     }
@@ -947,7 +954,8 @@ export class SipService {
               remoteNumber: callInfo.remoteNumber,
               direction: callInfo.direction,
               sessionId: sessionId,
-              activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
+              activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId),
+              presenceStatus: this.currentPresenceStatus
             });
           }
           // Clean up session
@@ -1103,7 +1111,8 @@ export class SipService {
       this.onCallStateChanged?.({
         status: 'failed',
         errorMessage,
-        errorCode: 'NOT_REGISTERED'
+        errorCode: 'NOT_REGISTERED',
+        presenceStatus: this.currentPresenceStatus
       });
       throw new Error(errorMessage);
     }
@@ -1195,7 +1204,8 @@ export class SipService {
                 remoteNumber: callInfo.remoteNumber,
                 direction: callInfo.direction,
                 sessionId: sessionId,
-                activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId)
+                activeCalls: this.getCallInfosArray().filter(c => c.sessionId !== sessionId),
+                presenceStatus: this.currentPresenceStatus
               });
             }
             
@@ -1263,7 +1273,8 @@ export class SipService {
         status: 'failed',
         remoteNumber: number,
         errorMessage,
-        errorCode
+        errorCode,
+        presenceStatus: this.currentPresenceStatus
       });
       console.error('Failed to make call:', error);
       throw new Error(errorMessage);
@@ -1354,7 +1365,8 @@ export class SipService {
           status: 'failed',
           remoteNumber: activeCallInfo?.remoteNumber,
           errorMessage,
-          errorCode
+          errorCode,
+          presenceStatus: this.currentPresenceStatus
         });
         throw new Error(errorMessage);
       }
@@ -4024,6 +4036,13 @@ export class SipService {
    */
   async setPresenceOnline(): Promise<boolean> {
     return this.updatePresenceStatus('available');
+  }
+
+  /**
+   * Set presence status to "unavailable" - do not disturb
+   */
+  async setPresenceUnavailable(): Promise<boolean> {
+    return this.updatePresenceStatus('unavailable');
   }
 
   /**
