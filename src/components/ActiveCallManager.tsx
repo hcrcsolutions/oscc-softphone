@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { TbMicrophone, TbMicrophoneOff, TbPlayerPause, TbPlayerPlay, TbUserMinus, TbPhone, TbUsers, TbPhoneIncoming, TbPhoneOff } from 'react-icons/tb';
+import { TbMicrophone, TbMicrophoneOff, TbPlayerPause, TbPlayerPlay, TbUserMinus, TbPhone, TbUsers, TbPhoneIncoming, TbPhoneOff, TbPhoneOutgoing } from 'react-icons/tb';
 import { SipService, CallInfo } from '@/services/sipService';
 
 interface ActiveCallManagerProps {
@@ -38,6 +38,7 @@ export default function ActiveCallManager({
   const [participants, setParticipants] = useState<ConferenceParticipant[]>([]);
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(new Set());
   const [isConferenceProcessing, setIsConferenceProcessing] = useState(false);
+  const [transferPhoneNumber, setTransferPhoneNumber] = useState('');
 
   const updateParticipants = useCallback(() => {
     if (sipService && isConferenceMode) {
@@ -151,6 +152,16 @@ export default function ActiveCallManager({
       updateParticipants();
     } catch (error) {
       console.error('Failed to end call:', error);
+    }
+  };
+
+  const transferCall = async (sessionId: string, destination: string) => {
+    if (!sipService || destination.trim() === '') return;
+
+    try {
+      sipService?.transferCall(sessionId, destination);
+    } catch (error) {
+      console.error('Failed to transfer call:', error);
     }
   };
 
@@ -341,6 +352,33 @@ export default function ActiveCallManager({
                     >
                       <TbPhoneOff className="w-4 h-4" />
                     </button>
+
+                    {/* Transfer input and button - only show when exactly one active call */}
+                    {call.status === 'connected' && activeCalls.length === 1 && (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="Extension"
+                          className="input input-bordered flex-1"
+                          value={transferPhoneNumber}
+                          onChange={(e) => setTransferPhoneNumber(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && transferPhoneNumber.trim() !== '') {
+                              transferCall(call.sessionId, transferPhoneNumber);
+                            }
+                          }}
+                        />
+                        <button
+                          onClick={() => transferCall(call.sessionId, transferPhoneNumber)}
+                          className="btn btn-sm btn-primary"
+                          disabled={transferPhoneNumber.trim() === ''}
+                          title="Transfer call"
+                        >
+                          <TbPhoneOutgoing className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+
                   </div>
                 </div>
               );

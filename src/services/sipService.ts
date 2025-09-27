@@ -31,6 +31,7 @@ export interface CallState {
   activeCalls?: CallInfo[];
   isConferenceMode?: boolean;
   conferenceRoomId?: string;
+  presenceStatus?: 'available' | 'unavailable' | 'away';
 }
 
 export interface CallInfo {
@@ -101,6 +102,7 @@ export class SipService {
   private maxReconnectAttempts: number = 100; // Maximum reconnection attempts
   private reconnectDelay: number = 5000; // Initial delay between reconnection attempts (5 seconds)
   private isReconnecting: boolean = false; // Flag to track if we're reconnecting
+  private currentPresenceStatus: 'available' | 'unavailable' | 'away' = 'available'; // Track presence status
 
   setCallStateCallback(callback: (state: CallState) => void) {
     this.onCallStateChanged = callback;
@@ -2063,7 +2065,7 @@ export class SipService {
           
           // Use proper REFER to transfer calls to conference
           console.log(`Transferring call ${call.sessionId} (${call.remoteNumber}) to conference via REFER`);
-          await this.transferCallToConference(call.sessionId);
+          await this.transferCall(call.sessionId, this.conferenceRoomId);
           
           console.log(`📨 REFER sent for ${call.remoteNumber}, waiting for NOTIFY confirmation...`);
           
@@ -2627,8 +2629,8 @@ export class SipService {
     };
   }
 
-  // Transfer a call to conference using REFER (as per conference.md Phase 4)
-  private async transferCallToConference(sessionId: string): Promise<void> {
+  // Transfer a call to conference or other phone # using REFER (as per conference.md Phase 4)
+  async transferCall(sessionId: string, destination: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
@@ -2638,16 +2640,16 @@ export class SipService {
       throw new Error(`Session ${sessionId} is not established (state: ${session.state})`);
     }
     
-    if (!this.config?.server || !this.conferenceRoomId) {
+    if (!this.config?.server || !destination) {
       console.warn('Missing config server or conference room ID, skipping REFER');
       return;
     }
     
     try {
       // Send REFER to transfer the call to conference (Phase 4 from conference.md)
-      console.log(`📞 Sending REFER to transfer ${sessionId} to conference room ${this.conferenceRoomId}`);
+      console.log(`📞 Sending REFER to transfer ${sessionId} to destination ${destination}`);
       
-      const referToUri = new URI('sip', this.conferenceRoomId, this.config.server);
+      const referToUri = new URI('sip', destination, this.config.server);
       const callInfo = this.callInfos.get(sessionId);
       
       // Log outgoing REFER message details
@@ -2666,10 +2668,9 @@ export class SipService {
       console.log(`Contact: <sip:[contact]@[transport];transport=ws>`);
       console.log(`Content-Length: 0`);
       console.log('════════════════════════════════════════════════════════════════');
-      console.log(`Target: Transfer ${callInfo?.remoteNumber} → Conference Room ${this.conferenceRoomId}`);
+      console.log(`Target: Transfer ${callInfo?.remoteNumber} → Conference Room ${destination}`);
       console.log('');
       
-      debugger;
       if (typeof session.refer === 'function') {
         // Use session's refer method if available
         await session.refer(referToUri, {
@@ -2715,7 +2716,7 @@ export class SipService {
         });
       } else if (typeof session.request === 'function') {
         // Fallback to manual REFER request
-        const referToURI = new URI('sip', this.conferenceRoomId, this.config.server);
+        const referToURI = new URI('sip', destination, this.config.server);
         await session.request('REFER', {
           extraHeaders: [
             `Refer-To: ${referToURI.toString()}`,
@@ -2752,9 +2753,9 @@ export class SipService {
         await this.inviteToConference(session, this.callInfos.get(sessionId)!);
       }
       
-      console.log(`✅ Successfully sent REFER for ${sessionId} to conference room ${this.conferenceRoomId}`);
+      console.log(`✅ Successfully sent REFER for ${sessionId} to destination ${destination}`);
     } catch (error) {
-      console.error(`Failed to send REFER for session ${sessionId} to conference:`, error);
+      console.error(`Failed to send REFER for session ${sessionId} to destination ${destination}:`, error);
       throw error;
     }
   }
@@ -3981,7 +3982,10 @@ export class SipService {
     const activeSession = this.getActiveSession();
     const activeCallInfo = this.getActiveCallInfo();
     if (!activeSession || !activeCallInfo) {
-      return { status: 'idle' };
+      return { 
+        status: 'idle',
+        presenceStatus: this.currentPresenceStatus 
+      };
     }
     switch (activeSession.state) {
       case SessionState.Initial:
@@ -3989,17 +3993,214 @@ export class SipService {
         return {
           status: 'connecting',
           remoteNumber: activeCallInfo.remoteNumber,
-          direction: activeCallInfo.direction
+          direction: activeCallInfo.direction,
+          presenceStatus: this.currentPresenceStatus
         };
       case SessionState.Established:
         return {
           status: 'connected',
           remoteNumber: activeCallInfo.remoteNumber,
           direction: activeCallInfo.direction,
-          isOnHold: activeCallInfo.isOnHold
+          isOnHold: activeCallInfo.isOnHold,
+          presenceStatus: this.currentPresenceStatus
         };
       default:
-        return { status: 'idle' };
+        return { 
+          status: 'idle',
+          presenceStatus: this.currentPresenceStatus 
+        };
+    }
+  }
+
+  /**
+   * Set presence status to "away" - incoming calls will go to voicemail
+   */
+  async setPresenceAway(): Promise<boolean> {
+    return this.updatePresenceStatus('away');
+  }
+
+  /**
+   * Set presence status to "available" - ready to receive calls
+   */
+  async setPresenceOnline(): Promise<boolean> {
+    return this.updatePresenceStatus('available');
+  }
+
+  /**
+   * Get current presence status
+   */
+  getPresenceStatus(): 'available' | 'unavailable' | 'away' {
+    return this.currentPresenceStatus;
+  }
+
+  /**
+   * Update presence status on FreeSWITCH using PUBLISH method
+   */
+  private async updatePresenceStatus(status: 'available' | 'unavailable' | 'away'): Promise<boolean> {
+    try {
+      if (!this.userAgent || !this.registerer) {
+        console.error('Cannot update presence - not registered');
+        return false;
+      }
+
+      console.log(`📢 Updating presence status to: ${status}`);
+      
+      // Map our status to FreeSWITCH presence states
+      const presenceState = status === 'available' ? 'open' : 'closed';
+      const activity = status === 'away' ? 'away' : status === 'unavailable' ? 'busy' : '';
+      
+      // Create PIDF (Presence Information Data Format) XML
+      const pidfXml = `<?xml version="1.0" encoding="UTF-8"?>
+<presence xmlns="urn:ietf:params:xml:ns:pidf" 
+          entity="sip:${this.config?.username}@${this.config?.server}">
+  <tuple id="${this.config?.username}">
+    <status>
+      <basic>${presenceState}</basic>
+      ${activity ? `<activity>${activity}</activity>` : ''}
+    </status>
+  </tuple>
+</presence>`;
+
+      // Send PUBLISH request to FreeSWITCH
+      const publishUri = `sip:${this.config?.username}@${this.config?.server}`;
+      const target = UserAgent.makeURI(publishUri);
+      
+      if (!target) {
+        console.error('Failed to create PUBLISH URI');
+        return false;
+      }
+
+      // Create and send PUBLISH request
+      const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+        'PUBLISH',
+        target,
+        this.userAgent.configuration.uri,
+        target,
+        {}, // options parameter
+        [
+          'Event: presence',
+          'Expires: 3600'
+        ], // extraHeaders parameter - Content-Type is set automatically from body
+        {
+          contentType: 'application/pidf+xml',
+          content: pidfXml,
+          contentDisposition: 'render'
+        } // body parameter
+      );
+
+      // Send the PUBLISH request
+      await new Promise<void>((resolve, reject) => {
+        this.userAgent!.userAgentCore.request(request, {
+          onAccept: () => {
+            console.log(`✅ Presence updated to: ${status}`);
+            this.currentPresenceStatus = status;
+            
+            // Update call state to reflect new presence
+            this.updateCallState();
+            
+            resolve();
+          },
+          onReject: (response) => {
+            console.error(`❌ Failed to update presence: ${response.message.statusCode} ${response.message.reasonPhrase}`);
+            reject(new Error(`Presence update failed: ${response.message.statusCode}`));
+          }
+        });
+      });
+
+      // Alternative approach using INFO if PUBLISH is not supported
+      if (status === 'away' || status === 'unavailable') {
+        // Also send a hint to FreeSWITCH to enable DND (Do Not Disturb)
+        console.log('📞 Setting DND status on FreeSWITCH...');
+        await this.sendDNDStatus(true);
+      }
+
+      return true;
+      
+    } catch (error) {
+      console.error('Failed to update presence status:', error);
+      
+      // Fallback: Try using INFO message to set DND
+      console.log('📞 Falling back to DND control via INFO...');
+      return await this.sendDNDStatus(status !== 'available');
+    }
+  }
+
+  /**
+   * Send Do Not Disturb (DND) status to FreeSWITCH
+   * This is an alternative/fallback method for controlling availability
+   */
+  private async sendDNDStatus(enabled: boolean): Promise<boolean> {
+    try {
+      if (!this.userAgent || !this.config) {
+        console.error('Cannot set DND - not registered');
+        return false;
+      }
+
+      console.log(`📵 Setting DND to: ${enabled ? 'ON' : 'OFF'}`);
+      
+      // FreeSWITCH typically uses *78 to enable DND and *79 to disable
+      const dndCode = enabled ? '*78' : '*79';
+      
+      // Create an OPTIONS or INFO request to trigger DND
+      const target = UserAgent.makeURI(`sip:${dndCode}@${this.config.server}`);
+      
+      if (!target) {
+        console.error('Failed to create DND URI');
+        return false;
+      }
+
+      // Send INFO request with DND command      
+      const request = this.userAgent.userAgentCore.makeOutgoingRequestMessage(
+        'INFO',
+        target,
+        this.userAgent.configuration.uri,
+        target,
+        {}, // options parameter
+        [], // extraHeaders parameter - Content-Type is set automatically from body
+        {
+          contentType: 'application/x-dnd-control',
+          content: enabled ? 'dnd-on' : 'dnd-off',
+          contentDisposition: 'render'
+        } // body parameter
+      );
+
+      await new Promise<void>((resolve, reject) => {
+        this.userAgent!.userAgentCore.request(request, {
+          onAccept: () => {
+            console.log(`✅ DND ${enabled ? 'enabled' : 'disabled'}`);
+            resolve();
+          },
+          onReject: (response) => {
+            console.warn(`DND control via INFO failed: ${response.message.statusCode}`);
+            reject();
+          }
+        });
+      });
+
+      return true;
+      
+    } catch (error) {
+      console.error('Failed to set DND status:', error);
+      
+      // Last resort: Try to dial the DND feature code
+      console.log('📞 Attempting to dial DND feature code...');
+      const dndCode = enabled ? '*78' : '*79';
+      
+      // Make a brief call to the feature code
+      const inviter = new Inviter(this.userAgent!, new URI('sip', dndCode, this.config!.server));
+      
+      inviter.stateChange.addListener((state) => {
+        if (state === SessionState.Established) {
+          // Immediately hang up after connecting to feature code
+          setTimeout(() => inviter.bye(), 100);
+        }
+      });
+      
+      await inviter.invite().catch(err => {
+        console.error('Failed to dial DND feature code:', err);
+      });
+      
+      return false;
     }
   }
 

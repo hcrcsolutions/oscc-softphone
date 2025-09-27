@@ -316,6 +316,39 @@ export default function Phone({ theme }: PhoneProps) {
     setPhoneNumber('');
   };
 
+  const setPresenceAway = async () => {
+    try {
+      console.log('Setting presence to Away...');
+      const success = await sipService.current.setPresenceAway();
+      if (success) {
+        console.log('✅ Presence set to Away - calls will go to voicemail');
+      } else {
+        setErrorMessage('Failed to set presence to Away');
+        setShowErrorAlert(true);
+      }
+    } catch (error) {
+      console.error('Failed to set presence to Away:', error);
+      setErrorMessage('Failed to set presence status');
+      setShowErrorAlert(true);
+    }
+  };
+
+  const setPresenceOnline = async () => {
+    try {
+      console.log('Setting presence to Online...');
+      const success = await sipService.current.setPresenceOnline();
+      if (success) {
+        console.log('✅ Presence set to Online - ready to receive calls');
+      } else {
+        setErrorMessage('Failed to set presence to Online');
+        setShowErrorAlert(true);
+      }
+    } catch (error) {
+      console.error('Failed to set presence to Online:', error);
+      setErrorMessage('Failed to set presence status');
+      setShowErrorAlert(true);
+    }
+  };
 
   const handleCall = async () => {
     if (!phoneNumber.trim()) return;
@@ -521,8 +554,15 @@ export default function Phone({ theme }: PhoneProps) {
   };
 
   const getStatusText = () => {
+    // Include presence status when idle
+    if (callState.status === 'idle' && isRegistered) {
+      const presence = callState.presenceStatus === 'away' ? ' (Away)' : 
+                       callState.presenceStatus === 'unavailable' ? ' (Unavailable)' : '';
+      return `Ready${presence}`;
+    }
+    
     switch (callState.status) {
-      case 'idle': return isRegistered ? 'Ready' : 'Not Registered';
+      case 'idle': return 'Not Registered';
       case 'connecting': return 'Connecting...';
       case 'connected': {
         const timer = callDuration > 0 ? ` (${formatDuration(callDuration)})` : '';
@@ -564,7 +604,26 @@ export default function Phone({ theme }: PhoneProps) {
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-3xl font-bold">Phone{extension ? ` (${extension})` : ''}</h2>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {/* Presence control buttons - only show when registered and not in a call */}
+            {isRegistered && callState.status === 'idle' && (
+              <div className="btn-group">
+                <button 
+                  className={`btn btn-sm ${callState.presenceStatus === 'available' ? 'btn-success' : 'btn-ghost'}`}
+                  onClick={setPresenceOnline}
+                  title="Set presence to Online - ready to receive calls"
+                >
+                  Online
+                </button>
+                <button 
+                  className={`btn btn-sm ${callState.presenceStatus === 'away' ? 'btn-warning' : 'btn-ghost'}`}
+                  onClick={setPresenceAway}
+                  title="Set presence to Away - calls go to voicemail"
+                >
+                  Away
+                </button>
+              </div>
+            )}
             <div className={`badge ${getStatusColor()}`}>
               {getStatusText()}
             </div>
