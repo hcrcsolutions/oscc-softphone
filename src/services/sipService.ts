@@ -71,6 +71,7 @@ export interface ConferenceMedia {
 }
 
 export class SipService {
+  private readonly CONF_ROOM: number = 3300; // Default conference room number
   private userAgent?: UserAgent;
   private registerer?: Registerer;
   private sessions: Map<string, any> = new Map(); // sessionId -> session
@@ -826,8 +827,7 @@ export class SipService {
     const isConferenceRelated = 
       (this.isConferenceMode && remoteUser === this.config?.username) || // Call from our own extension during conference
       (this.isConferenceMode && remoteUser === this.conferenceRoomId) || // Call from conference room
-      (this.isConferenceMode && /^30\d{2}$/.test(remoteUser)) || // Any conference room (3000-3999)
-      (this.isConferenceMode && remoteUser === '3000'); // Default conference room
+      (this.isConferenceMode && /^3[3-9]\d{2}$/.test(remoteUser)); // Any conference room (3300-3999)
     
     // Also check if we already have a session with a similar ID (outgoing conference join)
     const existingConferenceSession = Array.from(this.sessions.entries())
@@ -934,7 +934,7 @@ export class SipService {
               this.conferenceParticipants.delete(sessionId);
               
               // Check if only the conference room session remains (no real participants)
-              // Conference room session has ID like "conf_session_3000"
+              // Conference room session has ID like "conf_session_3300"
               const realParticipants = Array.from(this.conferenceParticipants).filter(
                 id => !id.startsWith('conf_session_')
               );
@@ -1976,9 +1976,9 @@ export class SipService {
   async enableConferenceMode(): Promise<void> {
     // Allocate a conference room from the pool BEFORE setting conference mode
     // This ensures we have the room ID before any UI updates
-    const allocatedRoom = await this.allocateConferenceRoom('3000');
+    const allocatedRoom = await this.allocateConferenceRoom(this.CONF_ROOM.toString());
     if (!allocatedRoom) {
-      // Try auto-allocation if 3000 is taken
+      // Try auto-allocation if default room is taken
       const autoRoom = await this.allocateConferenceRoom();
       if (!autoRoom) {
         console.error('Failed to allocate conference room');
@@ -2540,17 +2540,16 @@ export class SipService {
 
   // Conference room allocation and management
   private static readonly CONFERENCE_ROOM_PREFIX = '3';
-  private static readonly CONFERENCE_ROOM_START = 3000;
   private static readonly CONFERENCE_ROOM_END = 3999;
   private static allocatedRooms: Set<string> = new Set();
 
   /**
    * Get the next available conference room extension
-   * Conference rooms typically use extensions in the 3000-3999 range
+   * Conference rooms typically use extensions in the 3300-3999 range
    */
   getNextAvailableConferenceRoom(): string {
-    // Start from 3000 and find the first available room
-    for (let i = SipService.CONFERENCE_ROOM_START; i <= SipService.CONFERENCE_ROOM_END; i++) {
+    // Start from default conference room and find the first available room
+    for (let i = this.CONF_ROOM; i <= SipService.CONFERENCE_ROOM_END; i++) {
       const roomId = i.toString();
       if (!SipService.allocatedRooms.has(roomId)) {
         return roomId;
@@ -2631,7 +2630,7 @@ export class SipService {
     nextAvailable: string;
   } {
     const allocatedRooms = this.getAllocatedConferenceRooms();
-    const totalRooms = SipService.CONFERENCE_ROOM_END - SipService.CONFERENCE_ROOM_START + 1;
+    const totalRooms = SipService.CONFERENCE_ROOM_END - this.CONF_ROOM + 1;
     
     return {
       totalRooms,
@@ -2677,7 +2676,7 @@ export class SipService {
       console.log(`Max-Forwards: 70`);
       console.log(`Refer-To: <${referToUri.toString()}>`);
       console.log(`Referred-By: <sip:${this.config.username}@${this.config.server}>`);
-      console.log(`Contact: <sip:[contact]@[transport];transport=ws>`);
+      console.log(`Contact: <sip:${this.config.username}@${this.config.server};transport=ws>`);
       console.log(`Content-Length: 0`);
       console.log('════════════════════════════════════════════════════════════════');
       console.log(`Target: Transfer ${callInfo?.remoteNumber} → Conference Room ${destination}`);
@@ -3551,7 +3550,7 @@ export class SipService {
       console.log(`Event: ${eventPackage}`);
       console.log(`Accept: application/conference-info+xml`);
       console.log(`Expires: 3600`);
-      console.log(`Contact: <sip:[contact]@[transport];transport=ws>`);
+      console.log(`Contact: <sip:${this.config.username}@${this.config.server};transport=ws>`);
       console.log(`Supported: outbound`);
       console.log(`User-Agent: SIP.js/0.21.1`);
       console.log(`Content-Length: 0`);
@@ -3559,7 +3558,9 @@ export class SipService {
       console.log('');
 
       // Prepare headers for subscription that match the expected format
+      // Include proper Contact header with actual username
       const subscribeHeaders = [
+        `Contact: <sip:${this.config.username}@${this.config.server};transport=ws>`,
         'Accept: application/conference-info+xml',
         'Supported: outbound, replaces, norefersub',
         'Allow: ACK,BYE,CANCEL,INFO,INVITE,MESSAGE,NOTIFY,OPTIONS,PRACK,REFER,REGISTER,SUBSCRIBE',
