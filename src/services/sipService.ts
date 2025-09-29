@@ -71,7 +71,7 @@ export interface ConferenceMedia {
 }
 
 export class SipService {
-  private readonly CONF_ROOM: number = 3300; // Default conference room number
+  private readonly CONF_ROOM: number = SipService.CONFERENCE_ROOM_START; // 3300 - default conference room with high sampling rate
   private userAgent?: UserAgent;
   private registerer?: Registerer;
   private sessions: Map<string, any> = new Map(); // sessionId -> session
@@ -2540,6 +2540,7 @@ export class SipService {
 
   // Conference room allocation and management
   private static readonly CONFERENCE_ROOM_PREFIX = '3';
+  private static readonly CONFERENCE_ROOM_START = 3300;
   private static readonly CONFERENCE_ROOM_END = 3999;
   private static allocatedRooms: Set<string> = new Set();
 
@@ -2630,7 +2631,7 @@ export class SipService {
     nextAvailable: string;
   } {
     const allocatedRooms = this.getAllocatedConferenceRooms();
-    const totalRooms = SipService.CONFERENCE_ROOM_END - this.CONF_ROOM + 1;
+    const totalRooms = SipService.CONFERENCE_ROOM_END - SipService.CONFERENCE_ROOM_START + 1;
     
     return {
       totalRooms,
