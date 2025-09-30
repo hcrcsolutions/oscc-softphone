@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { TbMenu2, TbSun, TbMoon } from 'react-icons/tb';
 import Avatar from '@/components/Avatar';
-import LoginButton from '@/components/LoginButton';
 
 interface HeaderProps {
   onToggleSidebar: () => void;
@@ -51,8 +50,6 @@ export default function Header({ onToggleSidebar, onThemeChange }: HeaderProps) 
           
           <TbMoon className="swap-on w-8 h-8" />
         </label>
-        
-        <LoginButton showUserInfo={false} className="btn-sm" />
         
         <Avatar />
       </div>
