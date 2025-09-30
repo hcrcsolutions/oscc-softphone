@@ -5,6 +5,7 @@ import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import Phone from '@/components/Phone';
 import Setup from '@/components/Setup';
+import { AuthProvider } from '@/contexts/AuthContext';
 
 export default function AppWrapper() {
   const [activeComponent, setActiveComponent] = useState('phone');
@@ -37,18 +38,20 @@ export default function AppWrapper() {
   };
 
   return (
-    <div className="min-h-screen bg-base-100">
-      <Header onToggleSidebar={toggleSidebar} onThemeChange={handleThemeChange} />
-      <div className="flex">
-        <Sidebar 
-          activeComponent={activeComponent} 
-          setActiveComponent={setActiveComponent}
-          isCollapsed={isSidebarCollapsed}
-        />
-        <main className="flex-1 bg-base-100 min-h-[calc(100vh-4rem)]">
-          {renderComponent()}
-        </main>
+    <AuthProvider requireAuth={false}>
+      <div className="min-h-screen bg-base-100">
+        <Header onToggleSidebar={toggleSidebar} onThemeChange={handleThemeChange} />
+        <div className="flex">
+          <Sidebar 
+            activeComponent={activeComponent} 
+            setActiveComponent={setActiveComponent}
+            isCollapsed={isSidebarCollapsed}
+          />
+          <main className="flex-1 bg-base-100 min-h-[calc(100vh-4rem)]">
+            {renderComponent()}
+          </main>
+        </div>
       </div>
-    </div>
+    </AuthProvider>
   );
 }

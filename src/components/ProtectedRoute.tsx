@@ -68,7 +68,7 @@ export default function ProtectedRoute({
           <div className="card w-96 bg-base-100 shadow-xl">
             <div className="card-body text-center">
               <h2 className="card-title justify-center text-error">Access Denied</h2>
-              <p>You don't have the required permissions to access this page.</p>
+              <p>You don&apos;t have the required permissions to access this page.</p>
               <p className="text-sm opacity-60 mt-2">
                 Required roles: {requiredRoles.join(', ')}
               </p>
