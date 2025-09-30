@@ -15,17 +15,14 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   user: AccountInfo | null;
-  userProfile: any | null;
   userPhoto: string | null;
   error: string | null;
   
   // Methods
-  login: (useRedirect?: boolean) => Promise<void>;
+  login: () => Promise<void>;
   logout: () => Promise<void>;
   getAccessToken: (scopes?: string[]) => Promise<string | null>;
   refreshToken: () => Promise<boolean>;
-  switchAccount: (account: AccountInfo) => void;
-  getAllAccounts: () => AccountInfo[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -53,7 +50,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<AccountInfo | null>(null);
-  const [userProfile, setUserProfile] = useState<any | null>(null);
   const [userPhoto, setUserPhoto] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,12 +65,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
         if (currentUser) {
           setUser(currentUser);
           setIsAuthenticated(true);
-          
-          // Load additional user data
-          loadUserData();
-        } else if (requireAuth) {
-          // If auth is required and user is not authenticated, trigger login
-          await authService.loginRedirect();
+        } else {
+          // Always trigger popup login if user is not authenticated
+          try {
+            const response = await authService.loginPopup();
+            if (response) {
+              setUser(response.account);
+              setIsAuthenticated(true);
+            }
+          } catch (err) {
+            console.error('Auto-login failed:', err);
+            setError('Authentication required');
+          }
         }
       } catch (err) {
         console.error('Authentication initialization failed:', err);
@@ -92,7 +94,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
       setUser(authService.getCurrentUser());
       setIsAuthenticated(true);
       setError(null);
-      loadUserData();
     };
 
     window.addEventListener('auth:success' as any, handleAuthSuccess);
@@ -100,41 +101,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     return () => {
       window.removeEventListener('auth:success' as any, handleAuthSuccess);
     };
-  }, [authService, requireAuth]);
-
-  // Load user profile and photo
-  const loadUserData = useCallback(async () => {
-    try {
-      // Get user profile from Graph API
-      const profile = await authService.getUserProfile();
-      if (profile) {
-        setUserProfile(profile);
-      }
-
-      // Get user photo
-      const photo = await authService.getUserPhoto();
-      if (photo) {
-        setUserPhoto(photo);
-      }
-    } catch (err) {
-      console.error('Failed to load user data:', err);
-    }
   }, [authService]);
 
-  // Login method
-  const login = useCallback(async (useRedirect: boolean = false) => {
+  // Set custom user photo if needed
+  const setCustomUserPhoto = useCallback((photoUrl: string) => {
+    setUserPhoto(photoUrl);
+  }, []);
+
+  // Login method (always uses popup)
+  const login = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      if (useRedirect) {
-        await authService.loginRedirect();
-      } else {
-        const response = await authService.loginPopup();
-        if (response) {
-          setUser(response.account);
-          setIsAuthenticated(true);
-          await loadUserData();
-        }
+      const response = await authService.loginPopup();
+      if (response) {
+        setUser(response.account);
+        setIsAuthenticated(true);
       }
     } catch (err: any) {
       console.error('Login failed:', err);
@@ -142,7 +124,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [authService, loadUserData]);
+  }, [authService]);
 
   // Logout method
   const logout = useCallback(async () => {
@@ -150,7 +132,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     try {
       await authService.logout();
       setUser(null);
-      setUserProfile(null);
       setUserPhoto(null);
       setIsAuthenticated(false);
     } catch (err: any) {
@@ -181,17 +162,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     }
   }, [authService]);
 
-  // Switch account
-  const switchAccount = useCallback((account: AccountInfo) => {
-    authService.setActiveAccount(account);
-    setUser(account);
-    loadUserData();
-  }, [authService, loadUserData]);
-
-  // Get all accounts
-  const getAllAccounts = useCallback((): AccountInfo[] => {
-    return authService.getAllAccounts();
-  }, [authService]);
 
   // Auto-refresh tokens before expiry
   useEffect(() => {
@@ -223,15 +193,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     isAuthenticated,
     isLoading,
     user,
-    userProfile,
     userPhoto,
     error,
     login,
     logout,
     getAccessToken,
     refreshToken,
-    switchAccount,
-    getAllAccounts,
   };
 
   // Show loading component while initializing

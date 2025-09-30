@@ -5,7 +5,7 @@ import { TbUser } from 'react-icons/tb';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function Avatar() {
-  const { user, userPhoto, logout, isAuthenticated } = useAuth();
+  const { user, logout, isAuthenticated } = useAuth();
 
   if (!isAuthenticated || !user) {
     return (
@@ -19,17 +19,9 @@ export default function Avatar() {
     <div className="dropdown dropdown-end">
       <div tabIndex={0} role="button" className="btn btn-ghost btn-circle avatar flex items-center justify-center">
         <div className="w-10 h-10 rounded-full flex items-center justify-center overflow-hidden">
-          {userPhoto ? (
-            <img 
-              src={userPhoto} 
-              alt={user.name || 'User'} 
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full bg-primary flex items-center justify-center text-white font-medium">
-              {(user.name || user.username || 'U')[0].toUpperCase()}
-            </div>
-          )}
+          <div className="w-full h-full bg-primary flex items-center justify-center text-white font-medium">
+            {(user.name || user.username || 'U')[0].toUpperCase()}
+          </div>
         </div>
       </div>
       <ul tabIndex={0} className="menu menu-sm dropdown-content bg-base-100 rounded-box z-[1] mt-3 min-w-max p-2 shadow border border-base-300">

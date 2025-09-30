@@ -250,38 +250,7 @@ export class AuthService {
     });
   }
 
-  /**
-   * Get user profile from Microsoft Graph
-   */
-  async getUserProfile(): Promise<any> {
-    try {
-      const response = await this.callApi('https://graph.microsoft.com/v1.0/me');
-      if (response.ok) {
-        return await response.json();
-      }
-      throw new Error('Failed to fetch user profile');
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Get user photo from Microsoft Graph
-   */
-  async getUserPhoto(): Promise<string | null> {
-    try {
-      const response = await this.callApi('https://graph.microsoft.com/v1.0/me/photo/$value');
-      if (response.ok) {
-        const blob = await response.blob();
-        return URL.createObjectURL(blob);
-      }
-      return null;
-    } catch (error) {
-      console.error('Error fetching user photo:', error);
-      return null;
-    }
-  }
+  // Removed getUserProfile and getUserPhoto - not using Microsoft Graph API
 
   /**
    * Check if token is expired or about to expire

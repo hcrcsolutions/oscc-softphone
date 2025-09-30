@@ -28,18 +28,20 @@ export default function AuthenticatedApp() {
   };
 
   const renderComponent = () => {
-    // Only show components if user is authenticated
+    // Show message if user is not authenticated
     if (!isAuthenticated || !user) {
       return (
         <div className="flex items-center justify-center h-full">
           <div className="text-center">
             <div className="loading loading-spinner loading-lg mb-4"></div>
-            <p className="text-lg">Please wait while we authenticate you...</p>
+            <p className="text-lg">Authenticating with Microsoft...</p>
+            <p className="text-sm opacity-60 mt-2">Please complete the sign-in in the popup window</p>
           </div>
         </div>
       );
     }
 
+    // Only show Phone and Setup for authenticated users
     switch (activeComponent) {
       case 'setup':
         return <Setup />;
@@ -48,18 +50,7 @@ export default function AuthenticatedApp() {
     }
   };
 
-  // Show loading state during authentication
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-base-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg mb-4"></div>
-          <p className="text-lg">Authenticating with Microsoft...</p>
-          <p className="text-sm opacity-60 mt-2">Please complete the sign-in process</p>
-        </div>
-      </div>
-    );
-  }
+  // Don't show loading state - UI should always be visible
 
   return (
     <div className="min-h-screen bg-base-100">
