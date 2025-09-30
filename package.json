@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@azure/msal-browser": "^4.24.0",
+    "@azure/msal-react": "^3.0.20",
     "@types/jsonwebtoken": "^9.0.10",
     "daisyui": "^5.1.6",
     "jsonwebtoken": "^9.0.2",
