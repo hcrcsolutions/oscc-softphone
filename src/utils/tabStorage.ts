@@ -1,6 +1,8 @@
+'use client';
+
 /**
  * Tab-Specific Storage Manager
- * 
+ *
  * Provides isolated storage per browser tab using sessionStorage,
  * with optional localStorage templates for configuration sharing.
  */
@@ -12,6 +14,9 @@ const generateTabId = (): string => {
 
 // Get or create tab ID for this session
 const getTabId = (): string => {
+  if (typeof sessionStorage === 'undefined') {
+    return generateTabId();
+  }
   let tabId = sessionStorage.getItem('__tab_id');
   if (!tabId) {
     tabId = generateTabId();
@@ -290,8 +295,20 @@ class TabStorageManager {
   }
 }
 
-// Export singleton instance
-export const tabStorage = new TabStorageManager();
+// Export singleton instance (lazy initialization for browser only)
+let tabStorageInstance: TabStorageManager | null = null;
+
+export const tabStorage = new Proxy({} as TabStorageManager, {
+  get(target, prop) {
+    if (typeof sessionStorage === 'undefined') {
+      throw new Error('tabStorage can only be used in browser environment');
+    }
+    if (!tabStorageInstance) {
+      tabStorageInstance = new TabStorageManager();
+    }
+    return (tabStorageInstance as any)[prop];
+  }
+});
 
 // Helper hooks for React components
 export const useTabStorage = () => {

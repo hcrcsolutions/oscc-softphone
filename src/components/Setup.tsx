@@ -27,7 +27,6 @@ export default function Setup() {
     ringVolume: 50,
     microphoneVolume: 50
   });
-  const [isTestingAudio, setIsTestingAudio] = useState(false);
   const { getObject, setObject } = useTabStorage();
 
   useEffect(() => {
@@ -62,13 +61,6 @@ export default function Setup() {
     }));
   };
 
-  const handleAudioSettingChange = (field: string, value: string | number) => {
-    setAudioSettings(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
   const saveSipConfiguration = () => {
     try {
       setObject('sipConfig', sipConfig);
@@ -77,50 +69,6 @@ export default function Setup() {
     } catch (error) {
       console.error('Failed to save SIP configuration:', error);
       console.error('Failed to save configuration');
-    }
-  };
-
-  const saveAudioSettings = () => {
-    try {
-      setObject('audioSettings', audioSettings);
-      console.log('Audio settings saved!');
-    } catch (error) {
-      console.error('Failed to save audio settings:', error);
-      console.error('Failed to save audio settings');
-    }
-  };
-
-  const testAudio = async () => {
-    setIsTestingAudio(true);
-    try {
-      // Test microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // Play a test tone (simple beep)
-      const audioContext = new AudioContext();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-      
-      oscillator.frequency.value = 800;
-      gainNode.gain.value = audioSettings.ringVolume / 100 * 0.1; // Convert to appropriate volume
-      
-      oscillator.start();
-      
-      setTimeout(() => {
-        oscillator.stop();
-        audioContext.close();
-        stream.getTracks().forEach(track => track.stop());
-        setIsTestingAudio(false);
-        console.log('Audio test completed!');
-      }, 500);
-      
-    } catch (error) {
-      console.error('Audio test failed:', error);
-      setIsTestingAudio(false);
-      console.error('Audio test failed. Please check your microphone permissions.');
     }
   };
 
@@ -288,86 +236,6 @@ export default function Setup() {
           </div>
         </div>
         
-        <div className="card bg-base-100 shadow-xl">
-          <div className="card-body">
-            <h3 className="card-title mb-4">Audio Settings</h3>
-            
-            <div className="form-control w-full h-15">
-              <label className="label h-9">
-                <span className="label-text w-48">Microphone Device</span>
-              </label>
-              <select 
-                className="select select-bordered w-full h-9"
-                value={audioSettings.microphoneDevice}
-                onChange={(e) => handleAudioSettingChange('microphoneDevice', e.target.value)}
-              >
-                <option value="default">Default Microphone</option>
-                <option value="built-in">Built-in Microphone</option>
-                <option value="external">External Microphone</option>
-              </select>
-            </div>
-            
-            <div className="form-control w-full h-15">
-              <label className="label h-9">
-                <span className="label-text w-48">Speaker Device</span>
-              </label>
-              <select 
-                className="select select-bordered w-full h-9"
-                value={audioSettings.speakerDevice}
-                onChange={(e) => handleAudioSettingChange('speakerDevice', e.target.value)}
-              >
-                <option value="default">Default Speaker</option>
-                <option value="built-in">Built-in Speaker</option>
-                <option value="headphones">Headphones</option>
-              </select>
-            </div>
-            
-            <div className="form-control w-full h-15">
-              <label className="label h-9">
-                <span className="label-text w-48">Ring Volume: {audioSettings.ringVolume}%</span>
-              </label>
-              <input 
-                type="range" 
-                min="0" 
-                max="100" 
-                className="range range-primary h-9"
-                value={audioSettings.ringVolume}
-                onChange={(e) => handleAudioSettingChange('ringVolume', parseInt(e.target.value))}
-              />
-            </div>
-            
-            <div className="form-control w-full h-15">
-              <label className="label h-9">
-                <span className="label-text w-48">Microphone Volume: {audioSettings.microphoneVolume}%</span>
-              </label>
-              <input 
-                type="range" 
-                min="0" 
-                max="100" 
-                className="range range-primary h-9"
-                value={audioSettings.microphoneVolume}
-                onChange={(e) => handleAudioSettingChange('microphoneVolume', parseInt(e.target.value))}
-              />
-            </div>
-            
-            <div className="card-actions justify-end mt-4">
-              <button 
-                className={`btn btn-secondary ${isTestingAudio ? 'loading' : ''}`}
-                onClick={testAudio}
-                disabled={isTestingAudio}
-              >
-                {isTestingAudio ? 'Testing...' : 'Test Audio'}
-              </button>
-              <button 
-                className="btn btn-primary"
-                onClick={saveAudioSettings}
-              >
-                Save Audio Settings
-              </button>
-            </div>
-          </div>
-        </div>
-
         <ConfigTemplates />
         
         <div className="card bg-base-100 shadow-xl">
