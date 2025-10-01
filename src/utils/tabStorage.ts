@@ -312,6 +312,27 @@ export const tabStorage = new Proxy({} as TabStorageManager, {
 
 // Helper hooks for React components
 export const useTabStorage = () => {
+  // Return no-op functions during SSR
+  if (typeof sessionStorage === 'undefined') {
+    return {
+      storage: null as any,
+      tabId: '',
+      setItem: () => {},
+      getItem: () => null,
+      setObject: () => {},
+      getObject: () => null,
+      exportConfig: () => ({}),
+      importConfig: () => {},
+      saveAsTemplate: () => '',
+      loadTemplate: () => false,
+      getTemplates: () => ({}),
+      deleteTemplate: () => false,
+      setDefaultTemplate: () => {},
+      getDefaultTemplateId: () => null,
+      loadDefaultTemplateIfNeeded: () => false,
+    };
+  }
+
   return {
     storage: tabStorage,
     tabId: tabStorage.getTabId(),
