@@ -6,18 +6,26 @@ import Sidebar from '@/components/Sidebar';
 import Phone from '@/components/Phone';
 import Setup from '@/components/Setup';
 import { useAuth } from '@/contexts/AuthContext';
+import { useTabStorage } from '@/utils/tabStorage';
+
+// Check if SSO is enabled
+const SSO_ENABLED = process.env.NEXT_PUBLIC_SSO_ENABLED === 'true';
 
 export default function AuthenticatedApp() {
   const [activeComponent, setActiveComponent] = useState('phone');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [theme, setTheme] = useState('light');
   const { isAuthenticated, isLoading, user } = useAuth();
+  const { getItem, loadDefaultTemplateIfNeeded } = useTabStorage();
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem('theme') || 'light';
+    // Try to load default template if no configuration exists
+    loadDefaultTemplateIfNeeded();
+    
+    const savedTheme = getItem('theme') || 'light';
     setTheme(savedTheme);
     document.documentElement.setAttribute('data-theme', savedTheme);
-  }, []);
+  }, [getItem, loadDefaultTemplateIfNeeded]);
 
   const handleThemeChange = (newTheme: string) => {
     setTheme(newTheme);
@@ -28,8 +36,8 @@ export default function AuthenticatedApp() {
   };
 
   const renderComponent = () => {
-    // Show message if user is not authenticated
-    if (!isAuthenticated || !user) {
+    // Show message if SSO is enabled but user is not authenticated
+    if (SSO_ENABLED && (!isAuthenticated || !user)) {
       return (
         <div className="flex items-center justify-center h-full">
           <div className="text-center">
@@ -41,7 +49,7 @@ export default function AuthenticatedApp() {
       );
     }
 
-    // Only show Phone and Setup for authenticated users
+    // Show components (authentication not required if SSO is disabled)
     switch (activeComponent) {
       case 'setup':
         return <Setup />;

@@ -2,6 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { SipConfig } from '@/services/sipService';
+import { useTabStorage } from '@/utils/tabStorage';
+import ConfigTemplates from '@/components/ConfigTemplates';
+
+interface AudioSettings {
+  microphoneDevice: string;
+  speakerDevice: string;
+  ringVolume: number;
+  microphoneVolume: number;
+}
 
 export default function Setup() {
   const [sipConfig, setSipConfig] = useState<SipConfig>({
@@ -12,25 +21,22 @@ export default function Setup() {
     protocol: 'ws',
     moderatorPin: ''
   });
-  const [audioSettings, setAudioSettings] = useState({
+  const [audioSettings, setAudioSettings] = useState<AudioSettings>({
     microphoneDevice: 'default',
     speakerDevice: 'default',
     ringVolume: 50,
     microphoneVolume: 50
   });
   const [isTestingAudio, setIsTestingAudio] = useState(false);
+  const { getObject, setObject } = useTabStorage();
 
   useEffect(() => {
     // Load saved configurations
-    const savedSipConfig = localStorage.getItem('sipConfig');
-    const savedAudioSettings = localStorage.getItem('audioSettings');
+    const savedSipConfig = getObject<SipConfig>('sipConfig');
+    const savedAudioSettings = getObject<AudioSettings>('audioSettings');
     
     if (savedSipConfig) {
-      try {
-        setSipConfig(JSON.parse(savedSipConfig));
-      } catch (error) {
-        console.error('Failed to load SIP configuration:', error);
-      }
+      setSipConfig(savedSipConfig);
     } else {
       // Save default FreeSWITCH configuration if none exists
       const defaultConfig = {
@@ -41,15 +47,11 @@ export default function Setup() {
         protocol: 'ws' as const,
         moderatorPin: ''
       };
-      localStorage.setItem('sipConfig', JSON.stringify(defaultConfig));
+      setObject('sipConfig', defaultConfig);
     }
     
     if (savedAudioSettings) {
-      try {
-        setAudioSettings(JSON.parse(savedAudioSettings));
-      } catch (error) {
-        console.error('Failed to load audio settings:', error);
-      }
+      setAudioSettings(savedAudioSettings);
     }
   }, []);
 
@@ -69,7 +71,7 @@ export default function Setup() {
 
   const saveSipConfiguration = () => {
     try {
-      localStorage.setItem('sipConfig', JSON.stringify(sipConfig));
+      setObject('sipConfig', sipConfig);
       // You could also trigger a re-registration here
       console.log('SIP configuration saved! Please reload the Phone component to apply changes.');
     } catch (error) {
@@ -80,7 +82,7 @@ export default function Setup() {
 
   const saveAudioSettings = () => {
     try {
-      localStorage.setItem('audioSettings', JSON.stringify(audioSettings));
+      setObject('audioSettings', audioSettings);
       console.log('Audio settings saved!');
     } catch (error) {
       console.error('Failed to save audio settings:', error);
@@ -366,6 +368,8 @@ export default function Setup() {
           </div>
         </div>
 
+        <ConfigTemplates />
+        
         <div className="card bg-base-100 shadow-xl">
           <div className="card-body">
             <h3 className="card-title mb-4">Setup Instructions</h3>

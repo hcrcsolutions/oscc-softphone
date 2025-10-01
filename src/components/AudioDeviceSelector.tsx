@@ -3,11 +3,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { TbMicrophone, TbVolume } from 'react-icons/tb';
 import AudioLevelMeter from '@/components/AudioLevelMeter';
+import { useTabStorage } from '@/utils/tabStorage';
 
 interface AudioDevice {
   deviceId: string;
   label: string;
   kind: 'audioinput' | 'audiooutput';
+}
+
+interface AudioSettings {
+  microphoneDevice?: string;
+  speakerDevice?: string;
+  ringVolume?: number;
+  microphoneVolume?: number;
 }
 
 interface AudioDeviceSelectorProps {
@@ -31,6 +39,7 @@ export default function AudioDeviceSelector({
   const [selectedSpeaker, setSelectedSpeaker] = useState<string>('default');
   const [hasPermission, setHasPermission] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const { getObject, setObject } = useTabStorage();
   const [error, setError] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState<number>(0);
   const [outputLevel, setOutputLevel] = useState<number>(0);
@@ -43,23 +52,18 @@ export default function AudioDeviceSelector({
   const animationFrameRef = useRef<number | null>(null);
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
 
-  // Load saved preferences from localStorage
+  // Load saved preferences from tab storage
   useEffect(() => {
-    const savedAudioSettings = localStorage.getItem('audioSettings');
+    const savedAudioSettings = getObject<AudioSettings>('audioSettings');
     if (savedAudioSettings) {
-      try {
-        const settings = JSON.parse(savedAudioSettings);
-        if (settings.microphoneDevice) {
-          setSelectedMicrophone(settings.microphoneDevice);
-        }
-        if (settings.speakerDevice) {
-          setSelectedSpeaker(settings.speakerDevice);
-        }
-      } catch (error) {
-        console.error('Failed to load audio settings:', error);
+      if (savedAudioSettings.microphoneDevice) {
+        setSelectedMicrophone(savedAudioSettings.microphoneDevice);
+      }
+      if (savedAudioSettings.speakerDevice) {
+        setSelectedSpeaker(savedAudioSettings.speakerDevice);
       }
     }
-  }, []);
+  }, [getObject]);
 
   // Enumerate audio devices
   const enumerateDevices = async () => {
@@ -425,11 +429,10 @@ export default function AudioDeviceSelector({
   const handleMicrophoneChange = async (deviceId: string) => {
     setSelectedMicrophone(deviceId);
     
-    // Save to localStorage
-    const savedSettings = localStorage.getItem('audioSettings');
-    const settings = savedSettings ? JSON.parse(savedSettings) : {};
+    // Save to tab storage
+    const settings: AudioSettings = getObject<AudioSettings>('audioSettings') || {};
     settings.microphoneDevice = deviceId;
-    localStorage.setItem('audioSettings', JSON.stringify(settings));
+    setObject('audioSettings', settings);
     
     // Notify parent component
     if (onMicrophoneChange) {
@@ -450,11 +453,10 @@ export default function AudioDeviceSelector({
   const handleSpeakerChange = async (deviceId: string) => {
     setSelectedSpeaker(deviceId);
     
-    // Save to localStorage
-    const savedSettings = localStorage.getItem('audioSettings');
-    const settings = savedSettings ? JSON.parse(savedSettings) : {};
+    // Save to tab storage
+    const settings: AudioSettings = getObject<AudioSettings>('audioSettings') || {};
     settings.speakerDevice = deviceId;
-    localStorage.setItem('audioSettings', JSON.stringify(settings));
+    setObject('audioSettings', settings);
     
     // Notify parent component
     if (onSpeakerChange) {

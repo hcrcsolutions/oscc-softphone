@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { TbMenu2, TbSun, TbMoon } from 'react-icons/tb';
 import Avatar from '@/components/Avatar';
+import { useTabStorage } from '@/utils/tabStorage';
 
 interface HeaderProps {
   onToggleSidebar: () => void;
@@ -11,17 +12,18 @@ interface HeaderProps {
 
 export default function Header({ onToggleSidebar, onThemeChange }: HeaderProps) {
   const [theme, setTheme] = useState('light');
+  const { getItem, setItem } = useTabStorage();
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem('theme') || 'light';
+    const savedTheme = getItem('theme') || 'light';
     setTheme(savedTheme);
     document.documentElement.setAttribute('data-theme', savedTheme);
-  }, []);
+  }, [getItem]);
 
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
-    localStorage.setItem('theme', newTheme);
+    setItem('theme', newTheme);
     document.documentElement.setAttribute('data-theme', newTheme);
     onThemeChange(newTheme);
   };

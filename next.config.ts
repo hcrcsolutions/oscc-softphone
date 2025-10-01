@@ -24,7 +24,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https:",
               "font-src 'self'",
-              "connect-src 'self' ws: wss: http: https:", // Allow WebSocket connections for SIP
+              "connect-src 'self' ws: wss: http: https: https://login.microsoftonline.com", // Allow WebSocket connections for SIP and Microsoft auth
               "media-src 'self'",
               "worker-src 'self' blob:",
             ].join('; '),

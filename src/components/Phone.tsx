@@ -5,6 +5,7 @@ import { TbPhone, TbPhoneOff, TbPhoneIncoming, TbPlayerPause, TbPlayerPlay, TbUs
 import { SipService, CallState, SipConfig, CallInfo } from '@/services/sipService';
 import ActiveCallManager from '@/components/ActiveCallManager';
 import AudioDeviceSelector from '@/components/AudioDeviceSelector';
+import { useTabStorage } from '@/utils/tabStorage';
 
 interface PhoneProps {
   theme: string;
@@ -19,6 +20,7 @@ export default function Phone({ theme }: PhoneProps) {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [callDurations, setCallDurations] = useState<Map<string, number>>(new Map());
+  const { getObject } = useTabStorage();
   const [isConferenceMode, setIsConferenceMode] = useState(false);
   const [isConferenceProcessing, setIsConferenceProcessing] = useState(false);
   const [extension, setExtension] = useState<string>('');
@@ -246,10 +248,9 @@ export default function Phone({ theme }: PhoneProps) {
 
     // Auto-connect to SIP on application load
     const autoConnect = async () => {
-      const savedConfig = localStorage.getItem('sipConfig');
-      if (savedConfig) {
+      const config = getObject<SipConfig>('sipConfig');
+      if (config) {
         try {
-          const config: SipConfig = JSON.parse(savedConfig);
           setExtension(config.username);
           console.log('Auto-connecting to SIP server...');
           // Initialize audio context early (requires user interaction in some browsers)

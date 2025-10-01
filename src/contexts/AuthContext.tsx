@@ -10,6 +10,9 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { AccountInfo, AuthenticationResult } from '@azure/msal-browser';
 import { getAuthService, AuthService } from '@/services/authService';
 
+// Check if SSO is enabled via environment variable
+const SSO_ENABLED = process.env.NEXT_PUBLIC_SSO_ENABLED === 'true';
+
 interface AuthContextType {
   // State
   isAuthenticated: boolean;
@@ -45,16 +48,33 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   requireAuth = false,
   loadingComponent = <div>Loading authentication...</div>,
 }) => {
-  const [authService] = useState<AuthService>(() => getAuthService());
-  const [isLoading, setIsLoading] = useState(true);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authService] = useState<AuthService | null>(() => SSO_ENABLED ? getAuthService() : null);
+  const [isLoading, setIsLoading] = useState(SSO_ENABLED);
+  const [isAuthenticated, setIsAuthenticated] = useState(!SSO_ENABLED); // If SSO disabled, consider user authenticated
   const [user, setUser] = useState<AccountInfo | null>(null);
   const [userPhoto, setUserPhoto] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Initialize authentication state
   useEffect(() => {
+    // If SSO is disabled, skip authentication initialization
+    if (!SSO_ENABLED) {
+      console.log('SSO is disabled, skipping authentication');
+      // Set a mock user for non-SSO mode
+      setUser({
+        username: 'Local User',
+        localAccountId: 'local-user',
+        tenantId: 'local',
+        homeAccountId: 'local-user',
+        environment: 'local',
+        name: 'Local User',
+      } as AccountInfo);
+      return;
+    }
+
     const initAuth = async () => {
+      if (!authService) return;
+      
       setIsLoading(true);
       try {
         // Wait a bit for MSAL to initialize
@@ -99,19 +119,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
 
     initAuth();
 
-    // Listen for authentication events
-    const handleAuthSuccess = (event: CustomEvent) => {
-      console.log('Authentication successful:', event.detail);
-      setUser(authService.getCurrentUser());
-      setIsAuthenticated(true);
-      setError(null);
-    };
+    // Listen for authentication events (only if SSO is enabled)
+    if (SSO_ENABLED && authService) {
+      const handleAuthSuccess = (event: CustomEvent) => {
+        console.log('Authentication successful:', event.detail);
+        setUser(authService.getCurrentUser());
+        setIsAuthenticated(true);
+        setError(null);
+      };
 
-    window.addEventListener('auth:success' as any, handleAuthSuccess);
-    
-    return () => {
-      window.removeEventListener('auth:success' as any, handleAuthSuccess);
-    };
+      window.addEventListener('auth:success' as any, handleAuthSuccess);
+      
+      return () => {
+        window.removeEventListener('auth:success' as any, handleAuthSuccess);
+      };
+    }
   }, [authService]);
 
   // Set custom user photo if needed
@@ -119,8 +141,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     setUserPhoto(photoUrl);
   }, []);
 
-  // Login method (always uses popup)
+  // Login method (no-op if SSO is disabled)
   const login = useCallback(async () => {
+    if (!SSO_ENABLED || !authService) {
+      console.log('SSO is disabled, login is not required');
+      return;
+    }
+    
     setIsLoading(true);
     setError(null);
     try {
@@ -138,8 +165,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   }, [authService]);
 
 
-  // Get access token
+  // Get access token (returns null if SSO is disabled)
   const getAccessToken = useCallback(async (scopes?: string[]): Promise<string | null> => {
+    if (!SSO_ENABLED || !authService) {
+      return null;
+    }
+    
     try {
       return await authService.getAccessToken(scopes);
     } catch (err) {
@@ -148,8 +179,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     }
   }, [authService]);
 
-  // Refresh token
+  // Refresh token (returns true if SSO is disabled)
   const refreshToken = useCallback(async (): Promise<boolean> => {
+    if (!SSO_ENABLED || !authService) {
+      return true;
+    }
+    
     try {
       return await authService.refreshTokens();
     } catch (err) {
@@ -159,9 +194,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   }, [authService]);
 
 
-  // Auto-refresh tokens before expiry
+  // Auto-refresh tokens before expiry (only if SSO is enabled)
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!SSO_ENABLED || !authService || !isAuthenticated) return;
 
     const checkTokenExpiry = async () => {
       const isExpired = await authService.isTokenExpired();
