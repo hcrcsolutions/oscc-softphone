@@ -29,6 +29,10 @@ const nextConfig: NextConfig = {
               "worker-src 'self' blob:",
             ].join('; '),
           },
+          {
+            key: 'Cross-Origin-Opener-Policy',
+            value: 'same-origin-allow-popups', // Allow popups for Microsoft authentication
+          },
         ],
       },
     ];

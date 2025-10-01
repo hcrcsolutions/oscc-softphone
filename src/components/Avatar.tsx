@@ -28,18 +28,6 @@ export default function Avatar() {
         <li className="menu-title">
           <span className="text-sm font-medium">{user.name || user.username}</span>
         </li>
-        <li>
-          <a className="text-xs opacity-60">{user.username}</a>
-        </li>
-        <div className="divider my-1"></div>
-        <li>
-          <a onClick={() => {
-            // You can add profile navigation here
-          }}>
-            <TbUser className="w-4 h-4" />
-            Profile
-          </a>
-        </li>
       </ul>
     </div>
   );
