@@ -68,14 +68,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
         } else {
           // Always trigger popup login if user is not authenticated
           try {
+            console.log('No authenticated user found, showing login popup...');
             const response = await authService.loginPopup();
             if (response) {
               setUser(response.account);
               setIsAuthenticated(true);
             }
-          } catch (err) {
-            console.error('Auto-login failed:', err);
-            setError('Authentication required');
+          } catch (err: any) {
+            // If popup fails (e.g., blocked), fall back to redirect
+            if (err.errorCode === 'popup_window_error' || err.errorCode === 'empty_window_error') {
+              console.log('Popup blocked, falling back to redirect login...');
+              try {
+                await authService.loginRedirect();
+              } catch (redirectErr) {
+                console.error('Redirect login also failed:', redirectErr);
+                setError('Authentication required');
+              }
+            } else {
+              console.error('Auto-login failed:', err);
+              setError('Authentication required');
+            }
           }
         }
       } catch (err) {

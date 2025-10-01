@@ -19,7 +19,7 @@ export default function ProtectedRoute({
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
       // Automatically redirect to login if not authenticated
-      login(true);
+      login();
     }
   }, [isLoading, isAuthenticated, login]);
 
@@ -47,7 +47,7 @@ export default function ProtectedRoute({
             <h2 className="card-title justify-center">Authentication Required</h2>
             <p>Please sign in to access this application.</p>
             <div className="card-actions justify-center mt-4">
-              <button className="btn btn-primary" onClick={() => login(false)}>
+              <button className="btn btn-primary" onClick={() => login()}>
                 Sign in with Microsoft
               </button>
             </div>

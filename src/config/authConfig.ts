@@ -19,7 +19,7 @@ export const msalConfig: Configuration = {
     authority: process.env.NEXT_PUBLIC_AZURE_AUTHORITY || 'https://login.microsoftonline.com/common',
     
     // Redirect URI - must be registered in Azure AD
-    redirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI || typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+    redirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI || (typeof window !== 'undefined' ? `${window.location.origin}/sso/auth-callback` : 'http://localhost:3000/sso/auth-callback'),
     
     // Post-logout redirect URI
     postLogoutRedirectUri: process.env.NEXT_PUBLIC_POST_LOGOUT_URI || typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
