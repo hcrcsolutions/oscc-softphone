@@ -20,7 +20,6 @@ interface AuthContextType {
   
   // Methods
   login: () => Promise<void>;
-  logout: () => Promise<void>;
   getAccessToken: (scopes?: string[]) => Promise<string | null>;
   refreshToken: () => Promise<boolean>;
 }
@@ -138,21 +137,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     }
   }, [authService]);
 
-  // Logout method
-  const logout = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      await authService.logout();
-      setUser(null);
-      setUserPhoto(null);
-      setIsAuthenticated(false);
-    } catch (err: any) {
-      console.error('Logout failed:', err);
-      setError(err.message || 'Logout failed');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [authService]);
 
   // Get access token
   const getAccessToken = useCallback(async (scopes?: string[]): Promise<string | null> => {
@@ -187,7 +171,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
         if (!refreshed) {
           console.error('Failed to refresh token, user needs to re-authenticate');
           setError('Session expired. Please login again.');
-          await logout();
+          // Session expired, user needs to re-authenticate
         }
       }
     };
@@ -199,7 +183,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     checkTokenExpiry();
 
     return () => clearInterval(interval);
-  }, [isAuthenticated, authService, refreshToken, logout]);
+  }, [isAuthenticated, authService, refreshToken]);
 
   const value: AuthContextType = {
     isAuthenticated,
@@ -208,7 +192,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     userPhoto,
     error,
     login,
-    logout,
     getAccessToken,
     refreshToken,
   };

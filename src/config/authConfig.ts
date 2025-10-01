@@ -21,9 +21,6 @@ export const msalConfig: Configuration = {
     // Redirect URI - must be registered in Azure AD
     redirectUri: process.env.NEXT_PUBLIC_REDIRECT_URI || (typeof window !== 'undefined' ? `${window.location.origin}/sso/auth-callback` : 'http://localhost:3000/sso/auth-callback'),
     
-    // Post-logout redirect URI
-    postLogoutRedirectUri: process.env.NEXT_PUBLIC_POST_LOGOUT_URI || typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
-    
     // Navigate to login page immediately on load if not authenticated
     navigateToLoginRequestUrl: true,
   },

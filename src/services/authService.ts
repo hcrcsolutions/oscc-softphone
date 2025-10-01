@@ -9,7 +9,6 @@ import {
   AuthenticationResult,
   AccountInfo,
   InteractionRequiredAuthError,
-  EndSessionRequest,
   SilentRequest,
 } from '@azure/msal-browser';
 import { msalConfig, loginRequest, tokenRequest } from '@/config/authConfig';
@@ -104,33 +103,6 @@ export class AuthService {
     }
   }
 
-  /**
-   * Sign out
-   */
-  async logout(): Promise<void> {
-    if (!this.account) {
-      console.warn('No user logged in');
-      return;
-    }
-
-    const logoutRequest: EndSessionRequest = {
-      account: this.account,
-      postLogoutRedirectUri: msalConfig.auth.postLogoutRedirectUri,
-    };
-
-    try {
-      // Clear local session data
-      this.account = null;
-      
-      // Logout with redirect
-      await this.msalInstance.logoutRedirect(logoutRequest);
-    } catch (error) {
-      console.error('Logout failed:', error);
-      // Fallback: clear cache manually
-      await this.msalInstance.clearCache();
-      throw error;
-    }
-  }
 
   /**
    * Get access token silently
