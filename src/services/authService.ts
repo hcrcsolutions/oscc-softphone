@@ -17,10 +17,11 @@ export class AuthService {
   private msalInstance: PublicClientApplication;
   private account: AccountInfo | null = null;
   private loginInProgress: boolean = false;
+  private initializationPromise: Promise<void> | null = null;
 
   constructor() {
     this.msalInstance = new PublicClientApplication(msalConfig);
-    this.initializeMsal();
+    this.initializationPromise = this.initializeMsal();
   }
 
   /**
@@ -31,19 +32,22 @@ export class AuthService {
       // Handle redirect response if returning from auth
       await this.msalInstance.initialize();
       const response = await this.msalInstance.handleRedirectPromise();
-      
+
       if (response) {
         this.handleAuthResponse(response);
+        this.loginInProgress = false;
       } else {
         // Check if user is already signed in
         const accounts = this.msalInstance.getAllAccounts();
         if (accounts.length > 0) {
           this.account = accounts[0];
+          this.msalInstance.setActiveAccount(this.account);
           console.log('User already authenticated:', this.account.username);
         }
       }
     } catch (error) {
       console.error('Failed to initialize MSAL:', error);
+      this.loginInProgress = false;
     }
   }
 
@@ -66,8 +70,12 @@ export class AuthService {
    * Sign in using redirect (primary method)
    */
   async login(): Promise<void> {
-    if (this.loginInProgress) {
-      console.warn('Login already in progress');
+    // Check if an interaction is already in progress
+    const inProgress = this.msalInstance.getActiveAccount() !== null ||
+                       this.loginInProgress;
+
+    if (inProgress) {
+      console.warn('Login already in progress or user already authenticated');
       return;
     }
 
@@ -242,6 +250,15 @@ export class AuthService {
     } catch (error) {
       console.error('Failed to refresh tokens:', error);
       return false;
+    }
+  }
+
+  /**
+   * Wait for MSAL initialization to complete
+   */
+  async waitForInitialization(): Promise<void> {
+    if (this.initializationPromise) {
+      await this.initializationPromise;
     }
   }
 

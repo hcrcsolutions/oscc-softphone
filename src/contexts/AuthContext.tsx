@@ -74,18 +74,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
 
     const initAuth = async () => {
       if (!authService) return;
-      
+
       setIsLoading(true);
       try {
-        // Wait a bit for MSAL to initialize
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
+        // Wait for MSAL to fully initialize and handle redirect response
+        await authService.waitForInitialization();
+
         const currentUser = authService.getCurrentUser();
         if (currentUser) {
           setUser(currentUser);
           setIsAuthenticated(true);
+          console.log('User authenticated:', currentUser.username);
         } else {
-          // Trigger redirect login if user is not authenticated
+          // Only trigger login if no user is found after initialization
           console.log('No authenticated user found, redirecting to login...');
           try {
             await authService.login();
