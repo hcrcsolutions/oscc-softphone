@@ -63,31 +63,9 @@ export class AuthService {
   }
 
   /**
-   * Sign in using popup
+   * Sign in using redirect (primary method)
    */
-  async loginPopup(): Promise<AuthenticationResult | null> {
-    if (this.loginInProgress) {
-      console.warn('Login already in progress');
-      return null;
-    }
-
-    this.loginInProgress = true;
-    try {
-      const response = await this.msalInstance.loginPopup(loginRequest);
-      this.handleAuthResponse(response);
-      return response;
-    } catch (error) {
-      console.error('Login failed:', error);
-      throw error;
-    } finally {
-      this.loginInProgress = false;
-    }
-  }
-
-  /**
-   * Sign in using redirect
-   */
-  async loginRedirect(): Promise<void> {
+  async login(): Promise<void> {
     if (this.loginInProgress) {
       console.warn('Login already in progress');
       return;
@@ -96,6 +74,7 @@ export class AuthService {
     this.loginInProgress = true;
     try {
       await this.msalInstance.loginRedirect(loginRequest);
+      // Note: execution stops here as browser redirects
     } catch (error) {
       console.error('Login redirect failed:', error);
       this.loginInProgress = false;
@@ -125,13 +104,14 @@ export class AuthService {
       return response.accessToken;
     } catch (error) {
       if (error instanceof InteractionRequiredAuthError) {
-        // Token refresh required - use popup
-        console.log('Token refresh required, showing popup...');
+        // Token refresh required - use redirect
+        console.log('Token refresh required, redirecting to login...');
         try {
-          const response = await this.msalInstance.acquireTokenPopup(request);
-          return response.accessToken;
-        } catch (popupError) {
-          console.error('Failed to acquire token via popup:', popupError);
+          await this.msalInstance.acquireTokenRedirect(request);
+          // Note: execution stops here as browser redirects
+          return null;
+        } catch (redirectError) {
+          console.error('Failed to acquire token via redirect:', redirectError);
           return null;
         }
       }

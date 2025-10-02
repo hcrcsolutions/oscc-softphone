@@ -43,7 +43,7 @@ export default function AuthenticatedApp() {
           <div className="text-center">
             <div className="loading loading-spinner loading-lg mb-4"></div>
             <p className="text-lg">Authenticating with Microsoft...</p>
-            <p className="text-sm opacity-60 mt-2">Please complete the sign-in in the popup window</p>
+            <p className="text-sm opacity-60 mt-2">Redirecting to sign-in page...</p>
           </div>
         </div>
       );
