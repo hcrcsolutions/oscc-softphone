@@ -264,6 +264,7 @@ export class SipService {
     audio.controls = false;
     audio.muted = false;
     audio.volume = 1.0;
+    audio.id = `sip-audio-${sessionId}`;
 
     // Add event listeners for debugging
     audio.addEventListener('loadstart', () => console.log(`Audio (${sessionId}): loadstart`));
@@ -272,6 +273,8 @@ export class SipService {
     audio.addEventListener('playing', () => console.log(`Audio (${sessionId}): playing`));
     audio.addEventListener('error', (e) => console.error(`Audio error (${sessionId}):`, e));
 
+    // Add to DOM so AudioDeviceSelector can find it for level monitoring
+    audio.style.display = 'none';
     document.body.appendChild(audio);
     this.sessionAudioElements.set(sessionId, audio);
     return audio;
@@ -3969,7 +3972,7 @@ export class SipService {
       this.stopRingtone();
       this.cleanupAllAudioStreams();
       // Close audio context
-      if (this.audioContext) {
+      if (this.audioContext && this.audioContext.state !== 'closed') {
         await this.audioContext.close();
         this.audioContext = undefined;
       }

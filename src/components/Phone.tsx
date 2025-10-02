@@ -621,6 +621,9 @@ export default function Phone({ theme }: PhoneProps) {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
+  // Calculate if we're in an active call for AudioDeviceSelector
+  const isInActiveCall = activeCalls.length > 0 && (callState.status === 'connected' || callState.status === 'connecting');
+
   return (
     <div className="p-8">
       {/* Error Alert */}
@@ -726,10 +729,10 @@ export default function Phone({ theme }: PhoneProps) {
             />
             
             {/* Audio Device Selector */}
-            <AudioDeviceSelector 
+            <AudioDeviceSelector
               sipService={sipService.current}
               isMicrophoneMuted={isMicMuted}
-              isInActiveCall={callState.status === 'connected' || callState.status === 'ringing'}
+              isInActiveCall={isInActiveCall}
               onMicrophoneChange={(deviceId) => {
                 console.log('Microphone changed to:', deviceId);
               }}
