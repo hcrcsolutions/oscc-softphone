@@ -49,6 +49,12 @@ export default function InactivityMonitor({
   const [isInactive, setIsInactive] = useState(false);
   const [lastActivityTime, setLastActivityTime] = useState<Date>(new Date());
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isInactiveRef = useRef(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    isInactiveRef.current = isInactive;
+  }, [isInactive]);
 
   useEffect(() => {
     // Activity events to monitor
@@ -71,7 +77,7 @@ export default function InactivityMonitor({
       }
 
       // If user was inactive, mark as active again
-      if (isInactive) {
+      if (isInactiveRef.current) {
         setIsInactive(false);
         window.dispatchEvent(new CustomEvent('user:active', {
           detail: { timestamp: now.toISOString() }
@@ -116,7 +122,7 @@ export default function InactivityMonitor({
         window.removeEventListener(event, handleActivity);
       });
     };
-  }, [inactivityTimeout, isInactive, debug]);
+  }, [inactivityTimeout, debug]);
 
   // Don't render anything in production
   if (!debug) {
